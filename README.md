@@ -12,16 +12,18 @@ meit-ee/
 │  ├─ CMakeLists.txt
 │  ├─ PROTOCOL.md             # meit-ai ↔ meit-ee BLE 인터페이스 규격
 │  ├─ SYNC_CHECK.md           # 듀얼 I2S 동기화 실물 검증 절차
-│  └─ main/
-│     ├─ main.c               # 전체 파이프라인 및 이벤트 상태 관리
-│     ├─ config.h             # 샘플레이트·GPIO·threshold 등 주요 설정
-│     ├─ audio_capture.c/.h   # INMP441 4채널 I2S 수음
-│     ├─ tdoa.c/.h            # GCC-PHAT 기반 TDoA 및 8방향 추정
-│     ├─ resample.c/.h        # 48 kHz → 16 kHz AI용 오디오 변환
-│     ├─ ble_svc.c/.h         # NimBLE 오디오/방향 송신 및 명령 수신
-│     ├─ motor.c/.h           # DRV8833 + 진동모터 PWM/패턴 제어
-│     ├─ CMakeLists.txt
-│     └─ idf_component.yml    # ESP-IDF/esp-dsp 의존성
+│  ├─ main/
+│  │  ├─ main.c               # 전체 파이프라인 및 이벤트 상태 관리
+│  │  ├─ config.h             # 샘플레이트·GPIO·threshold 등 주요 설정
+│  │  ├─ audio_capture.c/.h   # INMP441 4채널 I2S 수음
+│  │  ├─ tdoa.c/.h            # GCC-PHAT 기반 TDoA 및 8방향 추정
+│  │  ├─ resample.c/.h        # 48 kHz → 16 kHz AI용 오디오 변환
+│  │  ├─ ble_svc.c/.h         # NimBLE 오디오/방향 송신 및 명령 수신
+│  │  ├─ motor.c/.h           # DRV8833 + 진동모터 PWM/패턴 제어
+│  │  ├─ CMakeLists.txt
+│  │  └─ idf_component.yml    # ESP-IDF/esp-dsp 의존성
+│  └─ tests/
+│     └─ timer_race_model.py # 모터 패턴 시퀀서 검증 모델
 ├─ tdoa/                      # PC에서 사용하는 TDoA 검증·캘리브레이션 도구
 │  ├─ gcc_phat.py             # Python GCC-PHAT 기준 구현
 │  ├─ direction_4mic.py       # 4마이크 → 8방향 계산
@@ -138,6 +140,11 @@ idf.py build
 | `config.h` | `RMS_GATE_DBFS = -60` | BLE 트래픽 감소용 MCU pre-gate |
 | `config.h` | `CLIP_FRAMES = 24` | 이벤트당 약 0.5초 오디오 |
 | `config.h` | `TDOA_VOTE_FRAMES = 6` | 방향 voting 프레임 수 |
+| `config.h` | `MOTOR_PWM_FREQ_HZ = 20000` | ERM PWM 캐리어 **초기값**. 실물에서 진동 세기·소음·저 duty 기동성 비교 후 확정 |
+| `config.h` | `MOTOR_SLEEP_GPIO = -1` | Adafruit DRV8833 SLP를 3V3에 strap (펌웨어 미제어) |
+| `config.h` | `MOTOR_SUPPLY_MV = 4200` | **VM 전원 경로 확인 필요.** raw LiPo면 4200 유지, 고정 regulated rail 확인 시에만 변경 |
+| `config.h` | `MOTOR_RATED_MV = 3000` | coin ERM 정격 3 V |
+| `config.h` | `MOTOR_DUTY_CAP` | 위 둘에서 계산 (기본 182/255 ≈ 71%). 보수적 초기 duty 상한, 실물 전류·온도 확인 필요 |
 
 ## 현재 상태
 
@@ -149,7 +156,7 @@ idf.py build
 | ESP32-S3 펌웨어 구조 | 구현 |
 | 48 kHz → 16 kHz resampling | 구현 |
 | BLE chunking / event_id | 구현 |
-| DRV8833 진동 패턴 제어 | 구현 |
+| DRV8833 진동 패턴 제어 코드 | 구현 / 실물 미검증 |
 | 실제 INMP441 2개/4개 수음 | 실물 검증 필요 |
 | 듀얼 I2S sample sync | 실물 검증 필요 |
 | BLE 실제 throughput | 실물 검증 필요 |

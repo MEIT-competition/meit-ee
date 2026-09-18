@@ -88,16 +88,37 @@ enum { CH_FRONT = 0, CH_RIGHT = 1, CH_BACK = 2, CH_LEFT = 3 };
 #define RMS_GATE_DBFS     -60.0f
 
 // --- DRV8833 x4 -> 8 motors, LEDC PWM ---
-// Each DRV8833 half-bridge has AIN1/AIN2; this design PWMs one input and
-// ties the other LOW for single-direction (vibration-only) drive -- document
-// that tie explicitly on the schematic, it's not automatic.
-// SLP (sleep, active HIGH) defaults LOW on Adafruit's DRV8833 breakout: tie
-// all 4 SLP pins to 3.3V so the drivers are enabled, or the motors simply
-// won't turn no matter what this firmware does. UNVERIFIED against your
-// specific breakout -- check its schematic, this is the Adafruit one.
+// One input per motor is PWM-driven and the partner input should be held LOW.
+// For the Adafruit DRV8833 breakout, SLP must be HIGH for the outputs to run.
+// MVP wiring uses SLP strapped to 3V3, so firmware control is disabled here.
+#define MOTOR_SLEEP_GPIO  (-1)
+
+// Motor drive limit. MOTOR_SUPPLY_MV is the worst-case MAXIMUM of the motor
+// supply rail, not a momentary meter reading. If VM is raw LiPo, keep 4200.
+// Only change it when a dedicated regulated motor rail is confirmed. Do not
+// power all motors from the ESP32 board's 3V3 rail.
+#define MOTOR_SUPPLY_MV   4200
+#define MOTOR_RATED_MV    3000
+#define MOTOR_DUTY_MAX    255
+
+#define MOTOR_DUTY_CAP_RAW ((MOTOR_DUTY_MAX * MOTOR_RATED_MV) / MOTOR_SUPPLY_MV)
+#define MOTOR_DUTY_CAP     (MOTOR_DUTY_CAP_RAW > MOTOR_DUTY_MAX \
+                            ? MOTOR_DUTY_MAX : MOTOR_DUTY_CAP_RAW)
+_Static_assert(MOTOR_SUPPLY_MV > 0,
+               "MOTOR_SUPPLY_MV must be > 0 (it divides MOTOR_DUTY_CAP)");
+_Static_assert(MOTOR_RATED_MV > 0,
+               "MOTOR_RATED_MV must be > 0");
+_Static_assert(MOTOR_DUTY_CAP > 0,
+               "MOTOR_DUTY_CAP computed to 0 -- motors would never move. "
+               "Check MOTOR_SUPPLY_MV / MOTOR_RATED_MV.");
+_Static_assert(MOTOR_DUTY_CAP <= MOTOR_DUTY_MAX,
+               "MOTOR_DUTY_CAP must fit the uint8_t duty scale");
+
+// Initial PWM carrier. Confirm on hardware by comparing vibration strength,
+// audible noise and low-duty startup behavior before finalizing.
 #define MOTOR_PWM_FREQ_HZ 20000
 #define MOTOR_PWM_RES     LEDC_TIMER_8_BIT
-extern const int MOTOR_GPIO[8];   // GPIO3 avoided deliberately -- see main.c
+extern const int MOTOR_GPIO[8];   // verify against the actual LOLIN S3 wiring
 
 // --- AI team interface (meit-ai, README "출력 포맷" / decision/*.py) ---
 // Keep these in sync with meit-ai by hand -- there is no shared repo for it.
