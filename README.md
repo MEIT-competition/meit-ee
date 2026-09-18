@@ -37,10 +37,23 @@ meit-ee/
 │  ├─ parse_dump.py               # serial dump → NumPy (4, N)
 │  ├─ test_parse_dump.py          # dump parser 테스트
 │  └─ test_synthetic.py           # synthetic 8방향 및 스트레스 테스트
+├─ laptop/
+│  ├─ __init__.py
+│  ├─ protocol.py                 # AUDIO / DIR / CMD packet encode/decode
+│  ├─ ble_receiver.py             # BLE scan/connect/notify/write
+│  ├─ ai_bridge.py                # BLE audio ↔ meit-ai 연결 인터페이스
+│  └─ tests/
+│     ├─ test_ble_protocol.py
+│     ├─ test_ble_audio_chunks.py
+│     ├─ test_ble_cmd_packet.py
+│     ├─ test_direction_mapping.py
+│     └─ test_resample_reference.py
 └─ requirements.txt
 ```
 
 `tdoa/`는 PC에서 알고리즘과 실측 데이터를 검증하는 Python 도구이고, 실제 ESP32에서 실행되는 production 코드는 `firmware/main/`에 있습니다. `firmware/hardware_tests/`는 production 파이프라인을 바꾸지 않고 실물 bring-up을 하기 위한 별도 테스트 앱입니다.
+
+`laptop/`은 노트북 측 BLE 통신 코드입니다. ESP32에서 전송되는 `DIR`/`AUDIO` notify를 수신하고 AUDIO chunk를 재조립하며, AI 결과를 `CMD` packet으로 변환해 ESP32로 다시 전송합니다. `laptop/tests/`에서는 실제 하드웨어 없이 BLE protocol, AUDIO chunk 재조립, CMD packet, 방향 index 및 resampling 관련 로직을 검증합니다.
 
 ## 시스템 구조
 
@@ -105,7 +118,68 @@ DRV8833 x4
 pip install -r requirements.txt
 ```
 
-TDoA synthetic 테스트:
+### Laptop BLE protocol 테스트
+
+노트북 측 BLE protocol과 packet 처리 로직은 실제 ESP32 없이도 테스트할 수 있습니다.
+
+```bash
+python -m pytest laptop/tests -q
+```
+
+현재 기준:
+
+```text
+11 passed
+```
+
+검증 항목:
+
+- `DIR` packet decode
+- `0xFF` unknown direction 처리
+- `AUDIO` chunk 재조립
+- `AUDIO` chunk 누락 감지
+- chunk index wraparound
+- PCM16 little-endian → float32 변환
+- `CMD` packet encode/decode
+- 진동 pattern 10 ms 단위 검증
+- 방향 index 0~7 convention
+- 48 kHz → 16 kHz streaming resampling sample count
+
+BLE receiver 자체의 import/CLI 확인:
+
+```bash
+python -m laptop.ble_receiver --help
+```
+
+실제 ESP32 연결 후:
+
+```bash
+python -m laptop.ble_receiver
+```
+
+실제 AI 연결 전 BLE 경로만 확인할 경우:
+
+```bash
+python -m laptop.ble_receiver --mock-ai
+```
+
+`--mock-ai`는 실제 위험음 분류기가 아니라 다음 통신 경로만 검증하기 위한 테스트 모드입니다.
+
+```text
+ESP32 AUDIO/DIR
+   ↓
+Laptop BLE receiver
+   ↓
+AUDIO chunk reassembly
+   ↓
+고정 mock AI 결과
+   ↓
+CMD encode
+   ↓
+ESP32 CMD write
+```
+
+### TDoA synthetic 테스트
 
 ```bash
 python tdoa/test_synthetic.py
@@ -113,13 +187,13 @@ python tdoa/test_synthetic.py
 
 현재 기준 synthetic 8방향 테스트는 8/8 통과합니다. 경적·사이렌·잔향·배치 오차 등의 스트레스 케이스도 검토용으로 포함되어 있습니다. 이 결과는 실제 INMP441/착용 상태 정확도를 의미하지 않습니다.
 
-Dump parser 테스트:
+### Dump parser 테스트
 
 ```bash
 python tdoa/test_parse_dump.py
 ```
 
-모터 host 회귀 테스트:
+### 모터 host 회귀 테스트
 
 ```bash
 python firmware/tests/run_motor_host_tests.py --cc gcc
@@ -221,7 +295,53 @@ idf.py -p COM_PORT flash monitor
 
 정확한 byte layout은 `firmware/PROTOCOL.md`를 기준으로 합니다.
 
-BLE production 코드는 현재 baseline이 구현되어 있지만, 팀원 BLE 작업 merge 및 실제 연결/MTU/throughput/chunk loss 검증은 아직 남아 있습니다. BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확인합니다.
+### Laptop BLE code
+
+노트북 측 BLE 코드는 `laptop/`에 있습니다.
+
+`laptop/protocol.py`
+
+- `DIR` packet decode
+- `AUDIO` chunk decode / reassembly
+- PCM16 little-endian → float32 변환
+- `CMD` packet encode/decode
+- direction index / sound class mapping
+
+`laptop/ble_receiver.py`
+
+- `MEIT-BELT` scan
+- ESP32 BLE 연결
+- GATT service / characteristic 확인
+- `DIR` notify subscribe
+- `AUDIO` notify subscribe
+- event_id별 AUDIO chunk 재조립
+- chunk 누락 감지
+- PCM16 audio array 변환
+- AI bridge 호출
+- `CMD` characteristic write
+
+`laptop/ai_bridge.py`
+
+- BLE receiver와 meit-ai live inference 사이의 연결 인터페이스
+- `run_mock_ai()`는 BLE 통합 테스트용 고정 결과
+- 실제 AI decision path는 아직 미연결
+- AI 측 `classify_clip()` / `judge()` live-path 결정 후 `run_live_ai()`에 연결
+
+현재 laptop-side BLE protocol/unit test는 실제 하드웨어 없이 **11개 모두 통과**했습니다.
+
+BLE production 코드는 현재 baseline이 구현되어 있지만, 실제 다음 항목은 실물에서 확인해야 합니다.
+
+- advertising / scan
+- 실제 connection
+- AUDIO / DIR / CMD characteristic discovery
+- notify subscribe
+- negotiated ATT MTU
+- AUDIO throughput
+- chunk loss
+- CMD write callback
+- end-to-end latency
+
+BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확인합니다.
 
 ## 주요 설정값
 
@@ -252,7 +372,11 @@ BLE production 코드는 현재 baseline이 구현되어 있지만, 팀원 BLE �
 | ESP32-S3 production firmware | ESP-IDF 5.2.5 build 통과 |
 | LOLIN S3 16 MB Flash / 8 MB OPI PSRAM build 설정 | 적용 / 실물 감지 확인 필요 |
 | 48 kHz → 16 kHz resampling | 구현 |
-| BLE AUDIO / DIR / CMD baseline | 구현 / 팀원 작업 merge·실물 검증 필요 |
+| BLE AUDIO / DIR / CMD baseline | 구현 / 실물 검증 필요 |
+| Laptop BLE protocol encode/decode | 구현 |
+| Laptop BLE receiver | 구현 / 실물 ESP32 연결 필요 |
+| Laptop BLE unit test | 11 tests 통과 |
+| Live AI bridge | 인터페이스 구현 / 실제 AI 연결 필요 |
 | DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 통과 / 실물 미검증 |
 | dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |
 | motor self-test app | 구현 / build 통과 / 실물 측정 필요 |
@@ -261,16 +385,24 @@ BLE production 코드는 현재 baseline이 구현되어 있지만, 팀원 BLE �
 | 실제 dual-I2S sample sync | 실물 검증 필요 |
 | 실제 8방향 정확도 | 실물 검증 필요 |
 | BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
-| meit-ai end-to-end 연동 | 통합 필요 |
+| meit-ai live inference 연동 | AI live path 확정 후 통합 필요 |
+| 전체 end-to-end | 실물 통합 필요 |
 
 ## 실물 도착 후 bring-up 순서
 
 1. **ESP32-S3 단독 부팅/flash** — Flash/PSRAM 감지, 로그, reset 여부 확인
+
 2. **INMP441 2개 → 4개 수음** — channel ordering, L/R slot, short read 여부 확인
+
 3. **dual-I2S sync 측정** — `hardware_tests/dual_i2s_sync` + `parse_dump.py` + `calibration.py`
+
 4. **실제 TDoA 8방향 측정** — `MIC_RADIUS_M`, channel 위치, confidence 분포 실측
+
 5. **DRV8833 + 모터 1개 → 8개** — `hardware_tests/motor_self_test`, 최소 기동 intensity/전원 안정성 확인
+
 6. **BLE 팀원 코드 merge 및 실측** — advertising, connection, MTU, AUDIO 전송 시간, chunk loss 확인
+   - 노트북 측은 먼저 `python -m laptop.ble_receiver --mock-ai`로 AUDIO/DIR 수신 → chunk 재조립 → CMD write 경로를 검증합니다.
+
 7. **meit-ai 통합** — AUDIO/DIR → AI 판단 → CMD → 해당 방향 진동 end-to-end 테스트
 
 실물에서 문제가 확인되기 전에는 TDoA/resampler/motor production 구조를 추측으로 크게 변경하지 않는 것을 원칙으로 합니다.
