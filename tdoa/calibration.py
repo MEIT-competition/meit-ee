@@ -10,6 +10,7 @@ Two separate things live here.
                    each of the 8 directions and classify by nearest template.
                    This absorbs geometry error AND body effects at once.
 """
+import argparse
 import json
 import numpy as np
 
@@ -94,3 +95,29 @@ def load(path):
     with open(path) as f:
         d = json.load(f)
     return {int(k): v for k, v in d.items()}
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Measure dual-I2S sample offsets from a (4, N) .npy dump."
+    )
+    parser.add_argument("capture", help="NumPy file produced by parse_dump.py")
+    parser.add_argument("--fs", type=int, default=48000, help="sample rate (Hz)")
+    parser.add_argument("--ref", type=int, default=0, help="reference channel")
+    parser.add_argument("--max-tau", type=float, default=0.05,
+                        help="maximum absolute lag to search (seconds)")
+    args = parser.parse_args()
+
+    channels = np.load(args.capture)
+    if channels.ndim != 2 or channels.shape[0] != 4:
+        parser.error(f"expected capture shape (4, N), got {channels.shape}")
+    if not 0 <= args.ref < channels.shape[0]:
+        parser.error(f"--ref must be in 0..{channels.shape[0] - 1}")
+
+    offsets = measure_sync_offsets(channels, args.fs, ref=args.ref,
+                                   max_tau=args.max_tau)
+    print("offsets:", json.dumps(offsets, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

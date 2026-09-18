@@ -29,6 +29,7 @@ meit-ee/
 │  ├─ direction_4mic.py       # 4마이크 → 8방향 계산
 │  ├─ calibration.py          # I2S sync offset / 착용 상태 캘리브레이션
 │  └─ test_synthetic.py       # synthetic 8방향 및 스트레스 테스트
+├─ CHANGES.md                 # 외부 리뷰 반영 및 수정 이력
 ├─ requirements.txt           # Python 테스트 의존성
 └─ .gitignore
 ```
