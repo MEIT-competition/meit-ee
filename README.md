@@ -91,7 +91,7 @@ DRV8833 x4
 
 `firmware/sdkconfig.defaults`에는 16 MB Flash, Octal PSRAM, 80 MHz, NimBLE 설정이 들어 있습니다. 실제 보드에서 16 MB Flash / 8 MB PSRAM이 정상 감지되고 안정적으로 부팅하는지는 실물에서 확인해야 합니다.
 
-현재 GPIO 값은 `firmware/main/config.h`에 있습니다. 칩 레벨 GPIO 충돌 검토는 완료했지만, 실제 LOLIN S3 실크스크린/핀아웃과 배선은 조립 전에 다시 대조합니다.
+현재 GPIO 값은 `firmware/main/config.h`에 있으며, 전체 하드웨어 배선과 GPIO 할당은 `firmware/PINMAP.md`에 정리되어 있습니다. 칩 레벨 GPIO 충돌 검토는 완료했지만, 실제 LOLIN S3 실크스크린/핀아웃과 배선은 조립 전에 다시 대조합니다.
 
 ## 방향 인덱스
 
@@ -387,6 +387,7 @@ BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확
 | BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
 | meit-ai live inference 연동 | AI live path 확정 후 통합 필요 |
 | 전체 end-to-end | 실물 통합 필요 |
+| Hardware pin map | `firmware/PINMAP.md` 작성 / 실물 배선 검증 필요 |
 
 ## 실물 도착 후 bring-up 순서
 
