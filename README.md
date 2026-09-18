@@ -8,33 +8,39 @@ INMP441 마이크 4개로 주변 소리를 수음하고 TDoA로 8방향을 추�
 
 ```text
 meit-ee/
-├─ firmware/                  # ESP32-S3 펌웨어
+├─ firmware/
 │  ├─ CMakeLists.txt
-│  ├─ PROTOCOL.md             # meit-ai ↔ meit-ee BLE 인터페이스 규격
-│  ├─ SYNC_CHECK.md           # 듀얼 I2S 동기화 실물 검증 절차
+│  ├─ PROTOCOL.md                 # meit-ai ↔ meit-ee BLE 인터페이스 규격
+│  ├─ SYNC_CHECK.md               # 듀얼 I2S 동기화 검증 개념/절차
+│  ├─ sdkconfig.defaults          # LOLIN S3 / NimBLE 기본 빌드 설정
 │  ├─ main/
-│  │  ├─ main.c               # 전체 파이프라인 및 이벤트 상태 관리
-│  │  ├─ config.h             # 샘플레이트·GPIO·threshold 등 주요 설정
-│  │  ├─ audio_capture.c/.h   # INMP441 4채널 I2S 수음
-│  │  ├─ tdoa.c/.h            # GCC-PHAT 기반 TDoA 및 8방향 추정
-│  │  ├─ resample.c/.h        # 48 kHz → 16 kHz AI용 오디오 변환
-│  │  ├─ ble_svc.c/.h         # NimBLE 오디오/방향 송신 및 명령 수신
-│  │  ├─ motor.c/.h           # DRV8833 + 진동모터 PWM/패턴 제어
+│  │  ├─ main.c                   # 전체 파이프라인 및 이벤트 상태 관리
+│  │  ├─ config.h                 # 샘플레이트·GPIO·threshold 등 주요 설정
+│  │  ├─ audio_capture.c/.h       # INMP441 4채널 I2S 수음
+│  │  ├─ tdoa.c/.h                # GCC-PHAT 기반 TDoA 및 8방향 추정
+│  │  ├─ resample.c/.h            # 48 kHz → 16 kHz AI용 오디오 변환
+│  │  ├─ ble_svc.c/.h             # NimBLE 오디오/방향 송신 및 명령 수신
+│  │  ├─ motor.c/.h               # DRV8833 + 진동모터 PWM/패턴 제어
 │  │  ├─ CMakeLists.txt
-│  │  └─ idf_component.yml    # ESP-IDF/esp-dsp 의존성
+│  │  └─ idf_component.yml        # ESP-IDF / esp-dsp 의존성
+│  ├─ hardware_tests/
+│  │  ├─ dual_i2s_sync/           # 4채널 capture → I2S bus skew 측정용 test app
+│  │  └─ motor_self_test/         # BLE 없이 모터 0~7 순차 구동하는 test app
 │  └─ tests/
-│     └─ timer_race_model.py # 모터 패턴 시퀀서 검증 모델
-├─ tdoa/                      # PC에서 사용하는 TDoA 검증·캘리브레이션 도구
-│  ├─ gcc_phat.py             # Python GCC-PHAT 기준 구현
-│  ├─ direction_4mic.py       # 4마이크 → 8방향 계산
-│  ├─ calibration.py          # I2S sync offset / 착용 상태 캘리브레이션
-│  └─ test_synthetic.py       # synthetic 8방향 및 스트레스 테스트
-├─ CHANGES.md                 # 외부 리뷰 반영 및 수정 이력
-├─ requirements.txt           # Python 테스트 의존성
-└─ .gitignore
+│     ├─ timer_race_model.py      # 모터 패턴 시퀀서 상태 모델
+│     ├─ motor_host_test.c        # 실제 motor.c host 회귀 테스트
+│     └─ run_motor_host_tests.py  # host test runner
+├─ tdoa/
+│  ├─ gcc_phat.py                 # Python GCC-PHAT 기준 구현
+│  ├─ direction_4mic.py           # 4마이크 → 8방향 계산
+│  ├─ calibration.py              # I2S sync offset / tau template 도구 + CLI
+│  ├─ parse_dump.py               # serial dump → NumPy (4, N)
+│  ├─ test_parse_dump.py          # dump parser 테스트
+│  └─ test_synthetic.py           # synthetic 8방향 및 스트레스 테스트
+└─ requirements.txt
 ```
 
-`tdoa/`는 PC에서 알고리즘을 검증하는 Python 도구이고, 실제 ESP32에서 실행되는 TDoA·BLE·모터 코드는 모두 `firmware/main/`에 있습니다.
+`tdoa/`는 PC에서 알고리즘과 실측 데이터를 검증하는 Python 도구이고, 실제 ESP32에서 실행되는 production 코드는 `firmware/main/`에 있습니다. `firmware/hardware_tests/`는 production 파이프라인을 바꾸지 않고 실물 bring-up을 하기 위한 별도 테스트 앱입니다.
 
 ## 시스템 구조
 
@@ -60,7 +66,9 @@ DRV8833 x4
 
 ## 하드웨어
 
-- MCU: LOLIN S3 V1.0.0 / ESP32-S3 / 16 MB Flash + 8 MB PSRAM
+- MCU: LOLIN S3 V1.0.0 / ESP32-S3
+- Flash: 16 MB Quad SPI
+- PSRAM: 8 MB Octal SPI
 - 마이크: INMP441 x4
 - 모터 드라이버: Adafruit DRV8833 x4
 - 진동모터: 3 V ERM coin motor x8
@@ -68,7 +76,9 @@ DRV8833 x4
 - AI 전송 오디오: 16 kHz mono PCM16
 - 통신: ESP32-S3 내장 BLE
 
-GPIO 값은 현재 `firmware/main/config.h`에 정리되어 있으며, **실제 LOLIN S3 핀맵과 배선 전 반드시 재확인해야 합니다.**
+`firmware/sdkconfig.defaults`에는 16 MB Flash, Octal PSRAM, 80 MHz, NimBLE 설정이 들어 있습니다. 실제 보드에서 16 MB Flash / 8 MB PSRAM이 정상 감지되고 안정적으로 부팅하는지는 실물에서 확인해야 합니다.
+
+현재 GPIO 값은 `firmware/main/config.h`에 있습니다. 칩 레벨 GPIO 충돌 검토는 완료했지만, 실제 LOLIN S3 실크스크린/핀아웃과 배선은 조립 전에 다시 대조합니다.
 
 ## 방향 인덱스
 
@@ -87,26 +97,42 @@ GPIO 값은 현재 `firmware/main/config.h`에 정리되어 있으며, **실제 
 
 방향을 안정적으로 판별하지 못하면 `0xFF`(unknown)를 사용합니다.
 
-## Python TDoA 테스트
+## Python / host 테스트
 
-설치
+의존성 설치:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-실행
+TDoA synthetic 테스트:
 
 ```bash
-cd tdoa
-python test_synthetic.py
+python tdoa/test_synthetic.py
 ```
 
-현재 Python 기준 구현은 synthetic 8방향 테스트와 경적·사이렌·잔향·배치 오차 스트레스 테스트에 사용합니다. 이 결과는 실제 INMP441 하드웨어 정확도를 의미하지 않으며, 실물에서는 별도 검증이 필요합니다.
+현재 기준 synthetic 8방향 테스트는 8/8 통과합니다. 경적·사이렌·잔향·배치 오차 등의 스트레스 케이스도 검토용으로 포함되어 있습니다. 이 결과는 실제 INMP441/착용 상태 정확도를 의미하지 않습니다.
 
-## ESP32-S3 펌웨어
+Dump parser 테스트:
 
-ESP-IDF **5.2.x** 기준으로 구성되어 있습니다.
+```bash
+python tdoa/test_parse_dump.py
+```
+
+모터 host 회귀 테스트:
+
+```bash
+python firmware/tests/run_motor_host_tests.py --cc gcc
+python firmware/tests/timer_race_model.py
+```
+
+`motor_host_test.c`는 production `motor.c`를 host stub 환경에서 직접 컴파일해 late/inactive tick, queue full, 연속 PLAY, timer failure 등의 시나리오를 확인합니다. 실물 PWM/DRV8833 동작을 검증하는 테스트는 아닙니다.
+
+## ESP32-S3 펌웨어 빌드
+
+ESP-IDF **5.2.x** 기준입니다. 현재 기준본은 ESP-IDF **5.2.5 전체 build 성공**을 확인했습니다.
+
+처음 target을 설정하는 경우:
 
 ```bash
 cd firmware
@@ -114,7 +140,76 @@ idf.py set-target esp32s3
 idf.py build
 ```
 
-실제 보드 flash 및 4마이크 동기 수음은 아직 실물 검증이 필요합니다. 펌웨어를 올리기 전에 `firmware/SYNC_CHECK.md`를 먼저 확인합니다.
+같은 build 환경에서 이후에는 보통 incremental build만 사용합니다.
+
+```bash
+idf.py build
+```
+
+매 수정마다 `fullclean`이나 `set-target`을 다시 실행할 필요는 없습니다.
+
+현재 기본 partition table은 factory app 1 MB 구성 그대로이며 production 이미지가 들어갈 공간은 남아 있습니다. Flash 전체가 16 MB라고 해서 partition table을 자동으로 16 MB 전부 사용하도록 확장한 상태는 아닙니다.
+
+## Dual-I2S sync bring-up
+
+4개의 INMP441을 실제로 연결한 뒤 두 I2S peripheral 사이의 고정 sample skew를 측정하기 위한 별도 test app이 있습니다.
+
+### 1. test app 빌드/flash
+
+```bash
+cd firmware/hardware_tests/dual_i2s_sync
+idf.py build
+idf.py -p COM_PORT flash monitor
+```
+
+Windows PowerShell에서 monitor 출력을 파일로 저장하는 예:
+
+```powershell
+idf.py -p COM_PORT flash monitor | Tee-Object capture.txt
+```
+
+Test app은 FRONT, RIGHT, BACK, LEFT 순서의 4채널 float sample 8192개를 `MEIT_RAW,...` 형식으로 출력합니다. production `audio_capture.c/.h`를 그대로 재사용하므로 production과 동일한 channel ordering/DC removal 경로를 탑니다.
+
+### 2. serial dump → NumPy
+
+repo root 기준:
+
+```bash
+python tdoa/parse_dump.py capture.txt capture.npy
+```
+
+결과 shape은 `(4, 8192)`입니다.
+
+### 3. bus skew 계산
+
+```bash
+python tdoa/calibration.py capture.npy
+```
+
+실제 sync 확인에서는 네 마이크를 최대한 가깝게 묶은 상태로 impulse를 수음하고, 전원을 여러 번 재인가하여 offset이 부팅마다 안정적인지 확인합니다. 측정 결과가 불안정하면 production TDoA 값부터 임의로 보정하지 말고 I2S 동기 구조를 먼저 재검토합니다.
+
+## Motor self-test
+
+BLE/AI 없이 DRV8833과 진동모터를 순서대로 확인하는 별도 test app입니다.
+
+```bash
+cd firmware/hardware_tests/motor_self_test
+idf.py build
+idf.py -p COM_PORT flash monitor
+```
+
+기본값:
+
+- intensity: 15%
+- ON: 700 ms
+- motor 사이 OFF: 500 ms
+- motor 0 → 7 순차 구동
+- 한 번에 하나만 구동
+- 종료 시 `motor_all_off()`
+
+강도와 시간은 `idf.py menuconfig`의 `MEIT motor self-test` 메뉴에서 조정할 수 있습니다.
+
+이 테스트는 실제 GPIO→모터 위치, 최소 기동 intensity, VM 전압 강하, ESP32 reset/brownout, DRV8833 온도 등을 확인하기 위한 bring-up 도구입니다.
 
 ## BLE 인터페이스
 
@@ -124,11 +219,13 @@ idf.py build
 - `DIR`: ESP32-S3 → 노트북, event_id / 8방향 / TDoA confidence / dBFS
 - `CMD`: 노트북 → ESP32-S3, event_id / intensity / class / vibration pattern
 
-정확한 byte layout과 event_id 처리 방식은 `firmware/PROTOCOL.md`를 기준으로 합니다.
+정확한 byte layout은 `firmware/PROTOCOL.md`를 기준으로 합니다.
+
+BLE production 코드는 현재 baseline이 구현되어 있지만, 팀원 BLE 작업 merge 및 실제 연결/MTU/throughput/chunk loss 검증은 아직 남아 있습니다. BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확인합니다.
 
 ## 주요 설정값
 
-실제 마이크와 허리띠 조립 후 실측 조정이 필요한 값입니다.
+실제 마이크와 벨트 조립 후 실측 조정이 필요한 값입니다.
 
 | 위치 | 값 | 설명 |
 |---|---:|---|
@@ -140,39 +237,40 @@ idf.py build
 | `config.h` | `RMS_GATE_DBFS = -60` | BLE 트래픽 감소용 MCU pre-gate |
 | `config.h` | `CLIP_FRAMES = 24` | 이벤트당 약 0.5초 오디오 |
 | `config.h` | `TDOA_VOTE_FRAMES = 6` | 방향 voting 프레임 수 |
-| `config.h` | `MOTOR_PWM_FREQ_HZ = 20000` | ERM PWM 캐리어 **초기값**. 실물에서 진동 세기·소음·저 duty 기동성 비교 후 확정 |
-| `config.h` | `MOTOR_SLEEP_GPIO = -1` | Adafruit DRV8833 SLP를 3V3에 strap (펌웨어 미제어) |
-| `config.h` | `MOTOR_SUPPLY_MV = 4200` | **VM 전원 경로 확인 필요.** raw LiPo면 4200 유지, 고정 regulated rail 확인 시에만 변경 |
+| `config.h` | `MOTOR_PWM_FREQ_HZ = 20000` | ERM PWM 초기값. 실물에서 진동/소음/저 duty 기동성 비교 필요 |
+| `config.h` | `MOTOR_SLEEP_GPIO = -1` | Adafruit DRV8833 SLP를 3V3에 strap, 펌웨어 미제어 |
+| `config.h` | `MOTOR_SUPPLY_MV = 4200` | raw LiPo 기준 worst-case motor rail 가정. 실제 VM 경로 확인 후 판단 |
 | `config.h` | `MOTOR_RATED_MV = 3000` | coin ERM 정격 3 V |
-| `config.h` | `MOTOR_DUTY_CAP` | 위 둘에서 계산 (기본 182/255 ≈ 71%). 보수적 초기 duty 상한, 실물 전류·온도 확인 필요 |
+| `config.h` | `MOTOR_DUTY_CAP` | 기본 182/255 ≈ 71%. 보수적 초기 duty 상한, 실물 검증 필요 |
 
 ## 현재 상태
 
 | 항목 | 상태 |
 |---|---|
-| Python GCC-PHAT / 8방향 계산 | 완료 |
-| synthetic 8방향 테스트 | 통과 |
-| 경적·사이렌 등 스트레스 테스트 | 통과 |
-| ESP32-S3 펌웨어 구조 | 구현 |
+| Python GCC-PHAT / 8방향 계산 | 구현 |
+| synthetic 8방향 테스트 | 8/8 통과 |
+| ESP32-S3 production firmware | ESP-IDF 5.2.5 build 통과 |
+| LOLIN S3 16 MB Flash / 8 MB OPI PSRAM build 설정 | 적용 / 실물 감지 확인 필요 |
 | 48 kHz → 16 kHz resampling | 구현 |
-| BLE chunking / event_id | 구현 |
-| DRV8833 진동 패턴 제어 코드 | 구현 / 실물 미검증 |
-| 실제 INMP441 2개/4개 수음 | 실물 검증 필요 |
-| 듀얼 I2S sample sync | 실물 검증 필요 |
-| BLE 실제 throughput | 실물 검증 필요 |
+| BLE AUDIO / DIR / CMD baseline | 구현 / 팀원 작업 merge·실물 검증 필요 |
+| DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 통과 / 실물 미검증 |
+| dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |
+| motor self-test app | 구현 / build 통과 / 실물 측정 필요 |
+| serial dump parser / calibration CLI | 구현 / parser 테스트 통과 |
+| 실제 INMP441 4채널 수음 | 실물 검증 필요 |
+| 실제 dual-I2S sample sync | 실물 검증 필요 |
 | 실제 8방향 정확도 | 실물 검증 필요 |
-| meit-ai 실시간 BLE receiver 연동 | 통합 필요 |
+| BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
+| meit-ai end-to-end 연동 | 통합 필요 |
 
-## 실물 도착 후 우선순위
+## 실물 도착 후 bring-up 순서
 
-1. ESP-IDF build / ESP32-S3 flash
-2. BLE advertising 및 노트북 연결 확인
-3. INMP441 2개 동시 수음
-4. INMP441 4개 동시 수음
-5. `SYNC_CHECK.md` 기준 듀얼 I2S offset 측정 및 전원 재인가 반복 검증
-6. 실제 8방향 TDoA 측정
-7. BLE AUDIO 전송 시간·MTU·chunk loss 측정
-8. meit-ai 실시간 receiver 연결
-9. DRV8833 + 진동모터 8개 통합
-10. 전체 end-to-end 테스트
+1. **ESP32-S3 단독 부팅/flash** — Flash/PSRAM 감지, 로그, reset 여부 확인
+2. **INMP441 2개 → 4개 수음** — channel ordering, L/R slot, short read 여부 확인
+3. **dual-I2S sync 측정** — `hardware_tests/dual_i2s_sync` + `parse_dump.py` + `calibration.py`
+4. **실제 TDoA 8방향 측정** — `MIC_RADIUS_M`, channel 위치, confidence 분포 실측
+5. **DRV8833 + 모터 1개 → 8개** — `hardware_tests/motor_self_test`, 최소 기동 intensity/전원 안정성 확인
+6. **BLE 팀원 코드 merge 및 실측** — advertising, connection, MTU, AUDIO 전송 시간, chunk loss 확인
+7. **meit-ai 통합** — AUDIO/DIR → AI 판단 → CMD → 해당 방향 진동 end-to-end 테스트
 
+실물에서 문제가 확인되기 전에는 TDoA/resampler/motor production 구조를 추측으로 크게 변경하지 않는 것을 원칙으로 합니다.
