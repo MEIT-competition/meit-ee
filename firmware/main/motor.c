@@ -32,6 +32,7 @@ static int step_count, step_idx;
 static uint8_t active_mask, active_duty;
 static bool step_is_on;
 static bool timer_armed;
+static int64_t step_deadline_us; // task-owned; TICK is only a wake-up hint
 
 static QueueHandle_t seq_queue;
 static TaskHandle_t  seq_task_handle;
@@ -179,6 +180,7 @@ static void apply_mask(uint8_t mask, uint8_t duty)
 static bool schedule(uint32_t ms)
 {
     if (ms == 0) ms = 1;
+    step_deadline_us = esp_timer_get_time() + (int64_t)ms * 1000;
     if (esp_timer_start_once(pattern_timer, (uint64_t)ms * 1000) == ESP_OK) {
         timer_armed = true;
         return true;
@@ -209,6 +211,7 @@ static void motor_timer_cb(void *arg)
 
 static void advance_step(void)
 {
+    if (step_count <= 0 || step_idx >= step_count) return;
     if (step_is_on) {
         apply_mask(active_mask, 0);                    // turn off
         step_is_on = false;
@@ -234,24 +237,10 @@ static void advance_step(void)
 static void handle_play(const seq_msg_t *m)
 {
     if (timer_armed) {
-        if (esp_timer_stop(pattern_timer) == ESP_OK) {
-            timer_armed = false;   // recalled in time; nothing else pending
-        } else {
-            // The alarm already fired, so discard the stale TICK before
-            // installing the replacement pattern.
-            seq_msg_t stale;
-            if (xQueueReceive(seq_queue, &stale, pdMS_TO_TICKS(50)) != pdTRUE) {
-                ESP_LOGE(TAG, "expected stale tick after stop() failure "
-                             "never arrived within 50ms; proceeding anyway");
-            } else if (stale.type == SEQ_MSG_PLAY) {
-                // A newer PLAY arrived while waiting for the stale TICK.
-                ESP_LOGW(TAG, "drained a PLAY instead of the expected stale "
-                              "tick; treating it as the current command");
-                handle_play(&stale);
-                return;
-            }
-            timer_armed = false;
-        }
+        // An expired timer may still enqueue a late TICK. It cannot advance
+        // the replacement before its own deadline, so no drain is needed.
+        (void)esp_timer_stop(pattern_timer);
+        timer_armed = false;
     }
 
     // Clear any outputs left active by the pattern being replaced.
@@ -266,15 +255,30 @@ static void handle_play(const seq_msg_t *m)
     advance_step();   // fires the first ON immediately, for its full on_ms
 }
 
+static TickType_t step_wait_ticks(void)
+{
+    if (!timer_armed) return portMAX_DELAY;
+    int64_t remaining_us = step_deadline_us - esp_timer_get_time();
+    if (remaining_us <= 0) return 0;
+    // Round up: a lost/full-queue TICK must not leave an ON step stuck.
+    return (TickType_t)((remaining_us * configTICK_RATE_HZ + 999999) / 1000000);
+}
+
 // Single owner of mutable sequencer state and timer start/stop operations.
 static void motor_seq_task(void *arg)
 {
     (void)arg;
     seq_msg_t msg;
     for (;;) {
-        if (xQueueReceive(seq_queue, &msg, portMAX_DELAY) != pdTRUE) continue;
-        if (msg.type == SEQ_MSG_TICK) advance_step();
-        else                          handle_play(&msg);
+        if (xQueueReceive(seq_queue, &msg, step_wait_ticks()) == pdTRUE &&
+            msg.type == SEQ_MSG_PLAY) handle_play(&msg);
+        // Old, duplicate and inactive TICKs carry no authority to advance.
+        // A late wake-up may service a now-due step, but never an early one.
+        if (timer_armed && esp_timer_get_time() >= step_deadline_us) {
+            (void)esp_timer_stop(pattern_timer);
+            timer_armed = false;
+            advance_step();
+        }
     }
 }
 

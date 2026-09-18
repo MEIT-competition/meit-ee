@@ -110,7 +110,8 @@ float tdoa_gcc_phat(const float *sig, const float *ref, int len,
         float den = y0 - 2*y1 + y2;
         if (fabsf(den) > 1e-12f) {
             float d = 0.5f * (y0 - y2) / den;
-            if (d > 0.5f) d = 0.5f; if (d < -0.5f) d = -0.5f;
+            if (d > 0.5f) d = 0.5f;
+            if (d < -0.5f) d = -0.5f;
             shift += d;
         }
     }

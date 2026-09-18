@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 #include "config.h"
 // 48 kHz -> 16 kHz, integer /3 with a 33-tap anti-alias FIR. Streaming.
 void resample_init(void);

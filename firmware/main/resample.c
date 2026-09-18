@@ -47,7 +47,8 @@ int resample_48k_to_16k(const float *in, int n_in, int16_t *out)
         if (phase == 0) {
             float acc = 0;
             for (int k = 0; k < NT; k++) acc += h[k] * hist[k];
-            if (acc > 0.999f) acc = 0.999f; if (acc < -0.999f) acc = -0.999f;
+            if (acc > 0.999f) acc = 0.999f;
+            if (acc < -0.999f) acc = -0.999f;
             out[o++] = (int16_t)(acc * 32767.0f);
         }
         phase = (phase + 1) % DECIM;
