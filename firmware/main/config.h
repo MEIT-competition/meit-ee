@@ -50,6 +50,22 @@
 // 1024*2*4 = 8192 bytes -- double the hardware limit.
 #define I2S_DMA_FRAMES    480   // 480*8 = 3840 bytes/descriptor, under 4092
 
+// ========================================================================
+// MPU6050 uses the LOLIN S3 native I2C pins.
+// microSD SPI pins are reserved here for future SD logging implementation.
+// ========================================================================
+
+// --- MPU6050 / GY-521 : I2C ---
+#define I2C_SDA_PIN       GPIO_NUM_42
+#define I2C_SCL_PIN       GPIO_NUM_41
+
+// --- microSD : SPI ---
+#define SD_SCK_PIN        GPIO_NUM_12
+#define SD_MOSI_PIN       GPIO_NUM_14
+#define SD_MISO_PIN       GPIO_NUM_18
+#define SD_CS_PIN         GPIO_NUM_21
+
+
 // Channel order used everywhere: FRONT, RIGHT, BACK, LEFT
 enum { CH_FRONT = 0, CH_RIGHT = 1, CH_BACK = 2, CH_LEFT = 3 };
 
