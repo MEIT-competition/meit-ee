@@ -145,16 +145,15 @@ regardless of hardware:**
      confidence gates whether to alert at all and dBFS alone drives
      intensity. This needs an answer from the AI side, not another repeat
      of the same flag.
-- [ ] AI side: the BLE receiver script itself doesn't exist yet (`main.py`
-     only takes file paths) -- this whole document describes the target
-     interface, not something currently running end-to-end. With firmware
-     now at a hardware-bring-up-ready state, this receiver is arguably the
-     single largest remaining gap in the whole project, more so than
-     anything left on the electronics side.
+- [ ] AI side: `laptop/ble_receiver.py` now implements the BLE receive/reassembly/
+     CMD-write path, but `laptop/ai_bridge.py::run_live_ai()` is still a stub.
+     Resolve `classify_clip()` vs `judge()` and wire the authoritative live
+     inference path before calling the system end-to-end complete.
 - [ ] Both sides: confirm the unknown-direction motor fallback above.
-- [ ] Electronics side: `GATING_MS` in `config.h` is a comment-only
-     reference today; nothing enforces the belt and the AI's 300 ms
-     assumption stay related if one side changes it independently.
+- [ ] Both sides: `GATING_MS` in `config.h` currently drives the MCU cooldown
+     (`COOLDOWN_FRAMES`), but there is still no shared constant with meit-ai.
+     If the AI-side gating value changes, re-check that the MCU cooldown policy
+     is still intentional.
 - [ ] Electronics side: **AUDIO chunk count depends on negotiated ATT MTU.**
      If MTU negotiation fails and stays at the BLE default (23 bytes), one
      ~8192-sample clip needs on the order of 1000 chunks, which is likely

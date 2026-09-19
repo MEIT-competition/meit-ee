@@ -53,7 +53,7 @@ Firmware channel order:
 
 ## 2. MPU6050 / GY-521
 
-LOLIN S3의 I2C 핀을 사용합니다.
+현재 프로젝트에서 I2C용으로 예약한 GPIO41/42를 사용합니다. ESP32-S3 I2C는 GPIO matrix로 라우팅 가능하므로 고정 I2C 핀이라는 의미는 아닙니다.
 
 | Signal | GPIO |
 |---|---:|

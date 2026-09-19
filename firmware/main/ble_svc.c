@@ -53,21 +53,31 @@ static SemaphoreHandle_t audio_tx_sem;   // created in ble_svc_init()
 
 static int cmd_write_cb(uint16_t ch, uint16_t vh, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR)
+        return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
 
     uint8_t buf[4 + 2 * PATTERN_MAX_PAIRS] = {0};
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    if (len > sizeof(buf)) len = sizeof(buf);
-    ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
+    if (len > sizeof(buf)) {
+        ESP_LOGW(TAG, "CMD too long (%u bytes, max %u)", len, (unsigned)sizeof(buf));
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    if (ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL) != 0) {
+        ESP_LOGW(TAG, "CMD mbuf flatten failed (%u bytes)", len);
+        return BLE_ATT_ERR_UNLIKELY;
+    }
 
-    if (len < 5) {
+    // Smallest valid packet is 4-byte header + one {on,off} pair = 6 bytes.
+    if (len < 6) {
         ESP_LOGW(TAG, "CMD too short (%u bytes)", len);
-        return 0;
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     uint8_t event_id = buf[0], intensity = buf[1], sound_class = buf[2], n = buf[3];
-    if (n < 1 || n > PATTERN_MAX_PAIRS || (uint16_t)(4 + 2 * n) > len) {
-        ESP_LOGW(TAG, "CMD bad n_pairs=%u for len=%u", n, len);
-        return 0;
+    uint16_t expected_len = (uint16_t)(4 + 2 * n);
+    if (n < 1 || n > PATTERN_MAX_PAIRS || expected_len != len) {
+        ESP_LOGW(TAG, "CMD bad n_pairs=%u for len=%u (expected=%u)",
+                 n, len, expected_len);
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     motor_step_t steps[PATTERN_MAX_PAIRS];
     for (int i = 0; i < n; i++) {

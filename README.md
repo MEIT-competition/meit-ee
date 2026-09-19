@@ -139,7 +139,7 @@ python -m pytest laptop/tests -q
 현재 기준:
 
 ```text
-11 passed
+17 passed
 ```
 
 검증 항목:
@@ -337,7 +337,7 @@ idf.py -p COM_PORT flash monitor
 - 실제 AI decision path는 아직 미연결
 - AI 측 `classify_clip()` / `judge()` live-path 결정 후 `run_live_ai()`에 연결
 
-현재 laptop-side BLE protocol/unit test는 실제 하드웨어 없이 **11개 모두 통과**했습니다.
+현재 laptop-side BLE protocol/unit/regression test는 실제 하드웨어 없이 **17개 모두 통과**했습니다.
 
 BLE production 코드는 현재 baseline이 구현되어 있지만, 실제 다음 항목은 실물에서 확인해야 합니다.
 
@@ -385,7 +385,7 @@ BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확
 | BLE AUDIO / DIR / CMD baseline | 구현 / 실물 검증 필요 |
 | Laptop BLE protocol encode/decode | 구현 |
 | Laptop BLE receiver | 구현 / 실물 ESP32 연결 필요 |
-| Laptop BLE unit test | 11 tests 통과 |
+| Laptop BLE unit/regression test | 17 tests 통과 |
 | Live AI bridge | 인터페이스 구현 / 실제 AI 연결 필요 |
 | DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 통과 / 실물 미검증 |
 | dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |

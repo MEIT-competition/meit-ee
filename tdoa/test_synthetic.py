@@ -131,5 +131,9 @@ def test_stress():
 
 
 if __name__ == "__main__":
-    test_eight_directions()
+    eight_ok = test_eight_directions()
     test_stress()
+    # Make this script usable as a real regression gate: the previous version
+    # printed FAIL but still exited 0, so CI/manual automation could miss a
+    # broken 8-direction convention. Stress cases remain informational.
+    raise SystemExit(0 if eight_ok else 1)
