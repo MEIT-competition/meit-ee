@@ -1,0 +1,16 @@
+# Normalize line endings to LF in the repository regardless of the
+# committer's OS/editor settings, so a Windows checkout doesn't turn an
+# entire unmodified file into a full-file diff (CRLF vs LF) with no real
+# content change. This does not rewrite existing history; it only affects
+# files as they are checked out/committed from now on. If a large number
+# of files show up as modified after this is added, run:
+#   git add --renormalize .
+# once, review that the resulting diff is whitespace/eol-only, and commit.
+
+* text=auto eol=lf
+
+# Keep binary-ish/opaque formats untouched either way.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.npy binary

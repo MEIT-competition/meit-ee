@@ -28,6 +28,26 @@ class Receiver:
         except Exception as exc:
             print(f"[DIR] decode error: {exc}")
             return
+        # A DIR notify is always sent before its event's own AUDIO chunks
+        # (see ble_svc.h), so any assembler state still held under this
+        # event_id here can only be a stale, never-completed leftover from
+        # an earlier use of the same id. event_id wraps and repeats every
+        # 256 events because it's a plain uint8 counter in firmware
+        # (main.c's `event_id_ctr`) -- unrelated to EVENT_HISTORY, which
+        # only sizes the direction-lookup ring, not this counter.
+        #
+        # The leftover happens when an event's LAST audio chunk was
+        # dropped: the assembler never sees a `last` chunk to trigger its
+        # own cleanup, so its partial state (parts + expected chunk index)
+        # sits there until the id is reused. Left alone, the new event's
+        # first chunk (index 0) will almost always mismatch that stale
+        # `expected` count, which AudioAssembler reads as a chunk gap --
+        # so the common failure mode is a perfectly good NEW event getting
+        # wrongly marked `lost` and discarded in process_events(), not old
+        # audio silently reaching the AI (that would additionally need the
+        # stale `expected` to coincidentally land back on exactly 0).
+        # Reset the state here so a reused event_id always starts clean.
+        self.assembler.reset_event(pkt.event_id)
         self.dir_by_event[pkt.event_id] = pkt
         print(
             f"[DIR] event={pkt.event_id} "
@@ -49,6 +69,17 @@ class Receiver:
         assert self.client is not None
         while True:
             completed = await self.complete_q.get()
+            # Pop (not get): dir_by_event is keyed by a uint8 event_id, so
+            # it can never hold more than 256 entries either way -- not
+            # literally unbounded. The reason to pop here is correctness:
+            # without it, an entry that's never claimed (e.g. its own audio
+            # gets discarded below for a chunk gap) sits under that
+            # event_id until the id wraps back around 256 events later, and
+            # a later, unrelated event reusing the same id could then be
+            # paired with that stale leftover DIR info instead of its own.
+            # Popping on every completion (successful or discarded) keeps
+            # this dict scoped to events that are genuinely still in flight.
+            dir_info = self.dir_by_event.pop(completed.event_id, None)
 
             if completed.lost:
                 print(
@@ -58,7 +89,6 @@ class Receiver:
                 continue
 
             audio = pcm16le_to_float32(completed.pcm_bytes)
-            dir_info = self.dir_by_event.get(completed.event_id, None)
 
             print(
                 f"[AUDIO] event={completed.event_id}: "
@@ -67,11 +97,18 @@ class Receiver:
             )
 
             try:
-                result = (
-                    run_mock_ai(audio, AI_SAMPLE_RATE, dir_info)
-                    if self.mock_ai
-                    else run_live_ai(audio, AI_SAMPLE_RATE, dir_info)
-                )
+                if self.mock_ai:
+                    result = run_mock_ai(audio, AI_SAMPLE_RATE, dir_info)
+                else:
+                    # run_live_ai is expected to eventually call into a real
+                    # (synchronous, likely slow) classifier. Calling it
+                    # directly here would block this whole event loop --
+                    # including BLE notify handling and CMD writes for any
+                    # OTHER event already in flight -- for as long as
+                    # inference takes. to_thread() keeps that off the loop.
+                    result = await asyncio.to_thread(
+                        run_live_ai, audio, AI_SAMPLE_RATE, dir_info
+                    )
             except NotImplementedError as exc:
                 print(f"[AI] {exc}")
                 print("[AI] no CMD sent")
@@ -84,13 +121,22 @@ class Receiver:
                 print("[AI] normal/below gate -> no CMD")
                 continue
 
-            cmd = encode_cmd(
-                event_id=completed.event_id,
-                intensity=result.intensity,
-                sound_class=result.sound_class,
-                pattern=result.pattern,
-            )
-            await self.client.write_gatt_char(CMD_UUID, cmd, response=True)
+            try:
+                cmd = encode_cmd(
+                    event_id=completed.event_id,
+                    intensity=result.intensity,
+                    sound_class=result.sound_class,
+                    pattern=result.pattern,
+                )
+                await self.client.write_gatt_char(CMD_UUID, cmd, response=True)
+            except Exception as exc:
+                # A bad AI result shape (encode_cmd) or a BLE write failure/
+                # mid-write disconnect (write_gatt_char) must not take the
+                # whole worker task down with it -- that would silently stop
+                # ALL future events from being processed for the rest of the
+                # connection, not just this one.
+                print(f"[CMD] event={completed.event_id}: failed to send: {exc}")
+                continue
             print(f"[CMD] event={completed.event_id} bytes={list(cmd)}")
 
 async def find_belt(timeout: float):

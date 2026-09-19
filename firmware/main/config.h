@@ -51,7 +51,13 @@
 #define I2S_DMA_FRAMES    480   // 480*8 = 3840 bytes/descriptor, under 4092
 
 // ========================================================================
-// MPU6050 uses the LOLIN S3 native I2C pins.
+// MPU6050 I2C is assigned to GPIO41/42 below. ESP32-S3's I2C peripheral is
+// GPIO-matrix-routable (not pinned to fixed hardware pins), so any free
+// GPIO works electrically; GPIO41/42 avoid every other subsystem's pins
+// (see PINMAP.md's GPIO summary/reserved tables). Whether the LOLIN S3
+// silkscreen also labels these as "the" I2C pins is a board-labeling
+// convenience, not a functional requirement -- confirm against the actual
+// board before wiring if that label matters to you.
 // microSD SPI pins are reserved here for future SD logging implementation.
 // ========================================================================
 

@@ -27,11 +27,11 @@
 
 static const char *TAG = "main";
 const int MOTOR_GPIO[8] = {1, 2, 13, 4, 8, 9, 10, 11};
-// GPIO3 deliberately avoided: it's an ESP32-S3 strapping pin (VDD_SPI
-// voltage select at reset). Using it for anything external risks boot
-// issues if the DRV8833 or wiring pulls it during reset -- not worth the
-// debugging time on a 5-day schedule. VERIFY the rest against the actual
-// LOLIN S3 pinout regardless.
+// GPIO3 deliberately avoided: it's an ESP32-S3 strapping/chip-boot-config
+// pin (see firmware/PINMAP.md "Reserved / avoided GPIO" -- GPIO0/3/45/46).
+// Using it for anything external risks boot issues if the DRV8833 or
+// wiring pulls it during reset -- not worth the debugging time on a 5-day
+// schedule. VERIFY the rest against the actual LOLIN S3 pinout regardless.
 
 typedef struct { int16_t pcm[CLIP_OUT_SAMPLES]; int n; uint8_t event_id; } clip_t;
 static QueueHandle_t q;

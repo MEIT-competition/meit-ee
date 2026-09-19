@@ -6,11 +6,10 @@ typedef struct { int index; float angle_deg; float confidence;
                  float conf_lr; float conf_fb;   // component confidences,
                                                  // before min() -- exposed
                                                  // for serial logging during
-                                                 // real-mic bring-up, see
-                                                 // main.c and CHANGES.md
-                                                 // ("confidence is not yet
-                                                 // validated against real
-                                                 // hardware")
+                                                 // real-mic bring-up. See
+                                                 // main.c -- confidence is
+                                                 // not yet validated against
+                                                 // real hardware.
                 } direction_t;
 
 void  tdoa_init(void);

@@ -27,7 +27,8 @@ nothing is sent to the belt in that case.
 ## AUDIO (notify, MCU -> laptop)
 
 16 kHz mono PCM16, little-endian, sent only when the loudness gate is
-exceeded (loudest of the 4 mics, not just FRONT -- see `CHANGES.md`).
+exceeded (loudest of the 4 mics, not just FRONT -- see `main.c`'s
+`capture_task`).
 **Chunked** -- a ~0.5s/8192-sample clip (~16 KB) is far larger than one ATT
 notification, so each notify is:
 
@@ -43,7 +44,8 @@ Clip length is whatever the event lasted (currently ~0.5 s via
 deployed model, not assumed**: `model/saved_model/danger_sound_classifier`'s
 signature takes `audio: shape=(None,)` (variable length), and feeding it a
 short clip with or without zero-padding to 4.5 s gave the same result in a
-synthetic test (see firmware `CHANGES.md`). If real horn/siren/crash
+synthetic test (not tracked in this repo -- re-run and record the result
+here if this claim needs to be re-checked). If real horn/siren/crash
 recordings later show a real difference, revisit this -- the synthetic test
 is not a substitute for testing on the actual target sounds.
 
@@ -85,7 +87,7 @@ equals `0xFF`, else as the plain int, before calling `judge()`. Track
 Sent after `judge()` returns non-`None`. `direction` as a literal value is
 **not** included -- the MCU looks it up locally from `event_id` (a small
 ring buffer, see `main.c`; this replaced a single global that had a real
-race -- see `CHANGES.md`). `pattern_name` and the string form of
+race -- see `main.c`'s `event_table` comment). `pattern_name` and the string form of
 `sound_class` are also dropped; a numeric id carries the same information
 for on-device logging.
 

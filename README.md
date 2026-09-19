@@ -79,15 +79,25 @@ DRV8833 x4
 
 ## 하드웨어
 
-- MCU: LOLIN S3 V1.0.0 / ESP32-S3
-- Flash: 16 MB Quad SPI
-- PSRAM: 8 MB Octal SPI
-- 마이크: INMP441 x4
+실제 구매한 부품 기준입니다. Core는 메인 파이프라인(수음 → TDoA → BLE → 모터)에 쓰이고, Optional/debug는 구매는 했지만 메인 경로와는 분리된 보조 기능입니다 — 아래 "현재 상태" 표 참고.
+
+### Core
+
+- MCU: LOLIN S3 V1.0.0 / ESP32-S3, 16 MB Flash (Quad SPI) / 8 MB PSRAM (Octal SPI), USB-C, 1개
+- 마이크: INMP441 x4 실사용 (+ 예비 2개, 총 6개 구매)
 - 모터 드라이버: Adafruit DRV8833 x4
-- 진동모터: 3 V ERM coin motor x8
+- 진동모터: 3 V ERM coin motor x8 실사용 (+ 예비 2개, 총 10개 구매)
+- 전원: TP4056 USB-C LiPo 충전 모듈 + 3.7V 2000mAh LiPo 배터리 (DTP634169), 모터 전원 노이즈 억제용 세라믹 커패시터 0.1uF/50V 다수
 - 방향 추정 샘플레이트: 48 kHz
 - AI 전송 오디오: 16 kHz mono PCM16
 - 통신: ESP32-S3 내장 BLE
+
+### Optional / debug
+
+메인 파이프라인과 분리된 보조 하드웨어입니다. 구매했으므로 코드/PINMAP에서 핀은 예약해 두었지만, 아직 driver/logging 구현체는 없습니다 (아래 "현재 상태" 참고).
+
+- IMU: MPU-6050 / GY-521 x2 (I2C) — 착용체 진동/움직임 측정 또는 보정 실험용
+- microSD: SPI microSD 모듈 1개 + microSD 8GB — 디버깅/CSV 로깅용
 
 `firmware/sdkconfig.defaults`에는 16 MB Flash, Octal PSRAM, 80 MHz, NimBLE 설정이 들어 있습니다. 실제 보드에서 16 MB Flash / 8 MB PSRAM이 정상 감지되고 안정적으로 부팅하는지는 실물에서 확인해야 합니다.
 
@@ -388,6 +398,8 @@ BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확
 | meit-ai live inference 연동 | AI live path 확정 후 통합 필요 |
 | 전체 end-to-end | 실물 통합 필요 |
 | Hardware pin map | `firmware/PINMAP.md` 작성 / 실물 배선 검증 필요 |
+| MPU6050 (optional/debug) | GPIO 예약(I2C 41/42)만 되어 있음 / driver 미구현 |
+| microSD logging (optional/debug) | GPIO 예약(SPI 12/14/18/21)만 되어 있음 / logging 코드 미구현 |
 
 ## 실물 도착 후 bring-up 순서
 
@@ -401,7 +413,7 @@ BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확
 
 5. **DRV8833 + 모터 1개 → 8개** — `hardware_tests/motor_self_test`, 최소 기동 intensity/전원 안정성 확인
 
-6. **BLE 팀원 코드 merge 및 실측** — advertising, connection, MTU, AUDIO 전송 시간, chunk loss 확인
+6. **BLE 실측** — `firmware/main/ble_svc.c`는 이미 production build에 merge/포함되어 있습니다 (build만 통과, 실물 미검증 상태). 남은 작업은 코드 병합이 아니라 advertising, connection, MTU, AUDIO 전송 시간, chunk loss 등 실측입니다.
    - 노트북 측은 먼저 `python -m laptop.ble_receiver --mock-ai`로 AUDIO/DIR 수신 → chunk 재조립 → CMD write 경로를 검증합니다.
 
 7. **meit-ai 통합** — AUDIO/DIR → AI 판단 → CMD → 해당 방향 진동 end-to-end 테스트
