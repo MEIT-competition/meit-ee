@@ -99,7 +99,7 @@ DRV8833 x4
 - IMU: MPU-6050 / GY-521 x2 (I2C) — 착용체 진동/움직임 측정 또는 보정 실험용
 - microSD: SPI microSD 모듈 1개 + microSD 8GB — 디버깅/CSV 로깅용
 
-`firmware/sdkconfig.defaults`에는 16 MB Flash, Octal PSRAM, 80 MHz, NimBLE 설정이 들어 있습니다. 실제 보드에서 16 MB Flash / 8 MB PSRAM이 정상 감지되고 안정적으로 부팅하는지는 실물에서 확인해야 합니다.
+`firmware/sdkconfig.defaults`에는 16 MB Flash, Octal PSRAM, 80 MHz, NimBLE 설정이 들어 있습니다. 최신 로컬 빌드에서는 ESP-IDF 5.2.5 / `esp32s3` target으로 전체 build가 성공했고, flash args에서 16 MB Flash 설정과 `sdkconfig`에서 Octal PSRAM 80 MHz 설정을 확인했습니다. 다만 실제 8 MB PSRAM 용량 감지와 안정적인 부팅은 보드 도착 후 실물에서 확인해야 합니다.
 
 현재 GPIO 값은 `firmware/main/config.h`에 있으며, 전체 하드웨어 배선과 GPIO 할당은 `firmware/PINMAP.md`에 정리되어 있습니다. 칩 레벨 GPIO 충돌 검토는 완료했지만, 실제 LOLIN S3 실크스크린/핀아웃과 배선은 조립 전에 다시 대조합니다.
 
@@ -334,12 +334,13 @@ idf.py -p COM_PORT flash monitor
 
 - BLE receiver와 meit-ai live inference 사이의 연결 인터페이스
 - `run_mock_ai()`는 BLE 통합 테스트용 고정 결과
-- 실제 AI decision path는 아직 미연결
-- AI 측 `classify_clip()` / `judge()` live-path 결정 후 `run_live_ai()`에 연결
+- meit-ai 측 위험음 분류/진동 결정 로직은 구현되어 있으나, `meit-ee`의 실제 BLE live path와의 adapter 연결은 아직 필요
+- AI 내부 결과값은 일반 Python 값으로 유지하고, BLE 송신 직전에 기존 `CMD` binary packet으로 encode하는 방향을 기준으로 통합
+- 기존 `run_live_ai()` 자리에 meit-ai의 실제 inference/decision entry point를 연결하는 것이 다음 작업
 
 현재 laptop-side BLE protocol/unit/regression test는 실제 하드웨어 없이 **17개 모두 통과**했습니다.
 
-BLE production 코드는 현재 baseline이 구현되어 있지만, 실제 다음 항목은 실물에서 확인해야 합니다.
+BLE production 코드는 현재 baseline이 구현되어 있고 CMD malformed packet validation까지 보강된 상태입니다. 실제 다음 항목은 실물에서 확인해야 합니다.
 
 - advertising / scan
 - 실제 connection
@@ -352,6 +353,23 @@ BLE production 코드는 현재 baseline이 구현되어 있지만, 실제 다�
 - end-to-end latency
 
 BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확인합니다.
+
+## meit-ai 연동 기준
+
+AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직은 준비되어 있습니다.
+
+- 분류 대상: 경적 / 사이렌 / 충돌 / 일상
+- 검증 정확도 공유값: 경적 96.6%, 사이렌 95.3%
+- 1회 추론 시간 공유값: 약 26.8 ms
+- AI 게이팅 주기: 250 ms
+- AI팀은 위험음 종류 판단 후 진동 세기·패턴까지 결정하는 로직을 보유
+- `meit-ee` 쪽에서는 MCU가 TDoA 방향을 계산하고 AUDIO/DIR을 노트북으로 전송
+- 노트북은 AI 판단 결과를 기존 `CMD` binary packet으로 encode해 MCU로 전송
+- MCU는 `event_id`로 기존 방향을 찾아 해당 방향의 모터를 구동
+
+회의에서 문자열 형태의 `3,1,95` 예시가 제안되었지만, 현재 `meit-ee`에는 이미 binary `CMD` protocol과 MCU parser, host/unit/regression test가 구현되어 있으므로 실제 통합 기준은 기존 binary protocol을 유지하는 쪽으로 정리합니다. AI 코드 내부에서는 direction/class/intensity/pattern을 일반 값으로 다루고, BLE 송신 직전에 `laptop/protocol.py`의 CMD encoder를 사용하는 방식입니다.
+
+현재 핵심 미완료 항목은 **AI repo의 실제 inference entry point를 `laptop/ai_bridge.py` / `ble_receiver.py` live path에 연결하는 adapter 작업**입니다. repo 전체를 합치거나 firmware protocol을 다시 설계할 필요는 없습니다.
 
 ## 주요 설정값
 
@@ -386,7 +404,7 @@ BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확
 | Laptop BLE protocol encode/decode | 구현 |
 | Laptop BLE receiver | 구현 / 실물 ESP32 연결 필요 |
 | Laptop BLE unit/regression test | 17 tests 통과 |
-| Live AI bridge | 인터페이스 구현 / 실제 AI 연결 필요 |
+| Live AI bridge | 인터페이스 구현 / meit-ai 모델·decision 코드와 adapter 연결 필요 |
 | DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 통과 / 실물 미검증 |
 | dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |
 | motor self-test app | 구현 / build 통과 / 실물 측정 필요 |
@@ -395,13 +413,24 @@ BLE 관련 코드를 수정한 뒤에는 production `idf.py build`를 다시 확
 | 실제 dual-I2S sample sync | 실물 검증 필요 |
 | 실제 8방향 정확도 | 실물 검증 필요 |
 | BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
-| meit-ai live inference 연동 | AI live path 확정 후 통합 필요 |
+| meit-ai live inference 연동 | AI 측 모델/decision 로직 준비됨 / `meit-ee` BLE live path와 adapter 연결 필요 |
 | 전체 end-to-end | 실물 통합 필요 |
 | Hardware pin map | `firmware/PINMAP.md` 작성 / 실물 배선 검증 필요 |
 | MPU6050 (optional/debug) | GPIO 예약(I2C 41/42)만 되어 있음 / driver 미구현 |
 | microSD logging (optional/debug) | GPIO 예약(SPI 12/14/18/21)만 되어 있음 / logging 코드 미구현 |
 
-## 실물 도착 후 bring-up 순서
+## 실물 도착 전 / 도착 후 작업
+
+현재 MCU를 포함한 실제 모듈이 아직 도착하지 않아 flash/boot/BLE/mic/motor 실물 검증은 시작하지 않은 상태입니다. 부품 도착 전에는 meit-ai live adapter 연결과 protocol-level 통합 테스트를 우선 진행합니다.
+
+### 부품 도착 전
+
+- meit-ai의 실제 inference/decision 함수와 `laptop/ai_bridge.py` 연결
+- fake/saved audio를 사용해 AUDIO → AI → CMD encode 경로 검증
+- binary `CMD` field mapping (`event_id`, `intensity`, `sound_class`, `pattern`) 최종 합의
+- 9/24까지 각 파트 단독 동작 확인, 9/28 전체 통합 목표
+
+### 부품 도착 후 bring-up 순서
 
 1. **ESP32-S3 단독 부팅/flash** — Flash/PSRAM 감지, 로그, reset 여부 확인
 
