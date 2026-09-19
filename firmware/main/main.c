@@ -79,21 +79,53 @@ static void on_cmd(uint8_t event_id, uint8_t intensity, uint8_t sound_class,
                          // SD-card event logging is added on this side.
     uint8_t dir;
     if (!lookup_event_direction(event_id, &dir)) {
+        // No direction record for this event at all -- it was never
+        // recorded, or the ring (EVENT_HISTORY slots) already cycled past
+        // it before this CMD arrived. This is a fault (a lost/stale
+        // record), not "direction unknown": we have no data to alert on,
+        // so the safe output is OFF.
+        //
+        // Previously this set dir = DIR_UNKNOWN and fell through to the
+        // branch below, which made a lookup/timing bug produce mask=0xFF --
+        // the single strongest possible motor output -- as its "safe
+        // fallback". That conflated this case with the genuine, looked-up
+        // DIR_UNKNOWN case below (TDoA legitimately couldn't localize a
+        // real, recorded danger sound), which is an intentional alert
+        // pattern, not an error. Keep them separate: only the second one is
+        // still allowed to fire every motor.
         ESP_LOGW(TAG, "CMD for unknown event_id=%u (evicted or stale?) -- "
-                     "firing all motors as a safe fallback", event_id);
-        dir = DIR_UNKNOWN;
+                     "no direction record, motors OFF (fail-safe)", event_id);
+        motor_play_pattern(0x00, intensity, steps, n_steps);
+        return;
     }
 
     uint8_t mask;
     if (dir == DIR_UNKNOWN) {
-        // No reliable direction, but the AI still says this is a danger
-        // sound. Default: alert on every motor rather than staying silent.
+        // A direction record for this event DOES exist, and it genuinely
+        // says "unresolved" -- TDoA voted and could not localize a sound
+        // the AI still classified as a danger. Deliberate, UNCHANGED
+        // behavior: alert on every motor rather than staying silent.
         // CONFIRM with the team -- an "unknown direction" pattern distinct
         // from a directional one may communicate better to the wearer.
         mask = 0xFF;
     } else {
         int bit = motor_bit_for_direction(dir);
-        mask = (bit < 0) ? 0xFF : (uint8_t)(1 << bit);
+        if (bit < 0) {
+            // dir is neither DIR_UNKNOWN nor a valid 0..7 index. The only
+            // writer, record_event_direction() (see capture_task), only
+            // ever stores DIR_UNKNOWN or 0..7, so this means the event
+            // table holds a value it should not be able to hold --
+            // corrupted state, not a real direction. Same fail-safe
+            // reasoning as the lookup-miss case above: we don't actually
+            // know where to alert, so OFF is the safe choice, not
+            // all-motors-on.
+            ESP_LOGE(TAG, "event %u has invalid stored direction=%u "
+                         "(expected DIR_UNKNOWN or 0..7) -- motors OFF "
+                         "(fail-safe)", event_id, dir);
+            mask = 0x00;
+        } else {
+            mask = (uint8_t)(1 << bit);
+        }
     }
     motor_play_pattern(mask, intensity, steps, n_steps);
 }
