@@ -27,9 +27,11 @@ meit-ee/
 │  │  ├─ dual_i2s_sync/           # 4채널 capture → I2S bus skew 측정용 test app
 │  │  └─ motor_self_test/         # BLE 없이 모터 0~7 순차 구동하는 test app
 │  └─ tests/
-│     ├─ timer_race_model.py      # 모터 패턴 시퀀서 상태 모델
-│     ├─ motor_host_test.c        # 실제 motor.c host 회귀 테스트
-│     └─ run_motor_host_tests.py  # host test runner
+│     ├─ timer_race_model.py               # 모터 패턴 시퀀서 상태 모델
+│     ├─ motor_host_test.c                 # 실제 motor.c host 회귀 테스트
+│     ├─ run_motor_host_tests.py           # motor host test runner
+│     ├─ event_direction_host_test.c       # event_id → motor mask fail-safe 테스트
+│     └─ run_event_direction_host_tests.py # event-direction host test runner
 ├─ tdoa/
 │  ├─ gcc_phat.py                 # Python GCC-PHAT 기준 구현
 │  ├─ direction_4mic.py           # 4마이크 → 8방향 계산
@@ -102,6 +104,12 @@ DRV8833 x4
 `firmware/sdkconfig.defaults`에는 16 MB Flash, Octal PSRAM, 80 MHz, NimBLE 설정이 들어 있습니다. 최신 로컬 빌드에서는 ESP-IDF 5.2.5 / `esp32s3` target으로 전체 build가 성공했고, flash args에서 16 MB Flash 설정과 `sdkconfig`에서 Octal PSRAM 80 MHz 설정을 확인했습니다. 다만 실제 8 MB PSRAM 용량 감지와 안정적인 부팅은 보드 도착 후 실물에서 확인해야 합니다.
 
 현재 GPIO 값은 `firmware/main/config.h`에 있으며, 전체 하드웨어 배선과 GPIO 할당은 `firmware/PINMAP.md`에 정리되어 있습니다. 칩 레벨 GPIO 충돌 검토는 완료했지만, 실제 LOLIN S3 실크스크린/핀아웃과 배선은 조립 전에 다시 대조합니다.
+
+### 전원 설계 상태
+
+현재 가장 큰 하드웨어 미완료 항목은 **전원 경로 확정**입니다. 구매한 1S LiPo(3.7 V nominal)와 TP4056만으로 ESP32-S3와 모터 rail을 최종 구성하는 방식은 아직 확정하지 않았습니다. 선택하는 구조에 따라 boost 또는 buck-boost 계열 전원 모듈이 추가로 필요할 수 있으므로, 실제 조립 전에 전원 tree와 추가 BOM을 확정해야 합니다.
+
+또한 LOLIN S3의 `+5V` 핀과 USB VBUS 사이의 실제 보드 회로는 공식 schematic으로 최종 확인하기 전까지 외부 5 V와 USB를 동시에 인가하지 않는 것을 원칙으로 합니다. ESP32-S3 reset/boot 중 DRV8833 입력이 뜨는 상황을 줄이기 위해 motor control 입력 8개에 10 kΩ pulldown을 추가하는 방안도 BOM 후보로 두고 있습니다.
 
 ## 방향 인덱스
 
@@ -210,7 +218,24 @@ python firmware/tests/run_motor_host_tests.py --cc gcc
 python firmware/tests/timer_race_model.py
 ```
 
-`motor_host_test.c`는 production `motor.c`를 host stub 환경에서 직접 컴파일해 late/inactive tick, queue full, 연속 PLAY, timer failure 등의 시나리오를 확인합니다. 실물 PWM/DRV8833 동작을 검증하는 테스트는 아닙니다.
+`motor_host_test.c`는 production `motor.c`를 host stub 환경에서 직접 컴파일해 late/inactive tick, queue full, 연속 PLAY, timer failure 등의 시나리오를 확인합니다. 현재 기준 100 Hz / 1000 Hz 모두 9/9 통과하며 timer race model도 `ALL PASS`입니다. 실물 PWM/DRV8833 동작을 검증하는 테스트는 아닙니다.
+
+### Event-direction fail-safe host 테스트
+
+```bash
+python firmware/tests/run_event_direction_host_tests.py --cc gcc
+```
+
+production `main.c`를 host stub 위에서 그대로 컴파일해 `event_id → direction → motor mask` 경로를 검증합니다. 현재 6개 시나리오, **33/33 checks 통과**입니다.
+
+- 정상 event_id → 기존 방향 mask 유지
+- 기록되지 않은 event_id → `0x00` (motors OFF)
+- EVENT_HISTORY에서 evict된 event_id → `0x00`
+- 정상적으로 기록된 `DIR_UNKNOWN` → 기존 의도대로 `0xFF` 유지
+- 비정상 direction 값 → `0x00` + error log
+- 방향 0~7 → 기존 identity mapping 유지
+
+즉 lookup/timing 오류가 더 이상 8개 모터 전체 ON으로 변환되지 않도록 fail-safe를 적용했고, 정상 `DIR_UNKNOWN` 동작과는 분리했습니다.
 
 ## ESP32-S3 펌웨어 빌드
 
@@ -361,7 +386,8 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 - 분류 대상: 경적 / 사이렌 / 충돌 / 일상
 - 검증 정확도 공유값: 경적 96.6%, 사이렌 95.3%
 - 1회 추론 시간 공유값: 약 26.8 ms
-- AI 게이팅 주기: 250 ms
+- AI팀 공유 기준 게이팅 주기: 250 ms
+- 현재 `firmware/main/config.h`의 `GATING_MS`는 300 ms이므로 **통합 전 반드시 한 값으로 맞춰야 함**
 - AI팀은 위험음 종류 판단 후 진동 세기·패턴까지 결정하는 로직을 보유
 - `meit-ee` 쪽에서는 MCU가 TDoA 방향을 계산하고 AUDIO/DIR을 노트북으로 전송
 - 노트북은 AI 판단 결과를 기존 `CMD` binary packet으로 encode해 MCU로 전송
@@ -405,7 +431,8 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | Laptop BLE receiver | 구현 / 실물 ESP32 연결 필요 |
 | Laptop BLE unit/regression test | 17 tests 통과 |
 | Live AI bridge | 인터페이스 구현 / meit-ai 모델·decision 코드와 adapter 연결 필요 |
-| DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 통과 / 실물 미검증 |
+| DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 9/9 @100 Hz·9/9 @1000 Hz / 실물 미검증 |
+| event_id → motor fail-safe | 구현 / host test 33/33 checks 통과 |
 | dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |
 | motor self-test app | 구현 / build 통과 / 실물 측정 필요 |
 | serial dump parser / calibration CLI | 구현 / parser 테스트 통과 |
@@ -415,9 +442,14 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
 | meit-ai live inference 연동 | AI 측 모델/decision 로직 준비됨 / `meit-ee` BLE live path와 adapter 연결 필요 |
 | 전체 end-to-end | 실물 통합 필요 |
-| Hardware pin map | `firmware/PINMAP.md` 작성 / 실물 배선 검증 필요 |
+| 전원 구조 | **미확정 / 추가 전원 모듈·BOM 검토 필요** |
+| Hardware pin map | `firmware/PINMAP.md` 작성 / 코드·문서 간 GPIO 대조 완료 / 실물 배선 검증 필요 |
 | MPU6050 (optional/debug) | GPIO 예약(I2C 41/42)만 되어 있음 / driver 미구현 |
 | microSD logging (optional/debug) | GPIO 예약(SPI 12/14/18/21)만 되어 있음 / logging 코드 미구현 |
+
+## 최신 스냅샷 요약
+
+현재 단계는 **코드 구조를 크게 바꾸는 단계보다 실물 검증과 통합 준비 단계**입니다. 핀맵, dual-I2S, TDoA production 구조, motor sequencer, BLE baseline은 유지하고 실제 부품이 도착한 뒤 하나씩 bring-up합니다. 지금 바로 우선할 일은 **전원 구조 확정 → live AI adapter 연결 → 실물 mic/motor/BLE 검증 → end-to-end 통합** 순서입니다.
 
 ## 실물 도착 전 / 도착 후 작업
 
@@ -425,8 +457,11 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 
 ### 부품 도착 전
 
+- **전원 tree 확정** — 1S LiPo → ESP32-S3 / DRV8833 / motor rail 구성과 필요한 boost·buck-boost 여부 결정
+- 10 kΩ pulldown 8개 등 추가 BOM 확정
 - meit-ai의 실제 inference/decision 함수와 `laptop/ai_bridge.py` 연결
 - fake/saved audio를 사용해 AUDIO → AI → CMD encode 경로 검증
+- AI팀 250 ms vs 현재 firmware `GATING_MS=300` 불일치 해소
 - binary `CMD` field mapping (`event_id`, `intensity`, `sound_class`, `pattern`) 최종 합의
 - 9/24까지 각 파트 단독 동작 확인, 9/28 전체 통합 목표
 
@@ -440,7 +475,7 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 
 4. **실제 TDoA 8방향 측정** — `MIC_RADIUS_M`, channel 위치, confidence 분포 실측
 
-5. **DRV8833 + 모터 1개 → 8개** — `hardware_tests/motor_self_test`, 최소 기동 intensity/전원 안정성 확인
+5. **DRV8833 + 모터 1개 → 8개** — `hardware_tests/motor_self_test`, 최소 기동 intensity/전원 안정성 확인. 기본 15%에서 모터가 돌지 않더라도 바로 배선 불량으로 판단하지 말고 intensity를 단계적으로 올려 최소 기동점을 찾습니다.
 
 6. **BLE 실측** — `firmware/main/ble_svc.c`는 이미 production build에 merge/포함되어 있습니다 (build만 통과, 실물 미검증 상태). 남은 작업은 코드 병합이 아니라 advertising, connection, MTU, AUDIO 전송 시간, chunk loss 등 실측입니다.
    - 노트북 측은 먼저 `python -m laptop.ble_receiver --mock-ai`로 AUDIO/DIR 수신 → chunk 재조립 → CMD write 경로를 검증합니다.
