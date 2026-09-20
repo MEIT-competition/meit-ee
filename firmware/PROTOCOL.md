@@ -102,17 +102,29 @@ for on-device logging.
 Max size 4 + 2x4 = 12 bytes, fits one ATT packet without MTU negotiation.
 
 If `event_id` doesn't match anything in the MCU's recent-event history
-(evicted, or a stale/duplicate write), firmware falls back to firing all
-motors rather than silently dropping the command -- see the fallback note
-below, same reasoning.
+(evicted, never recorded, or a stale/duplicate write), firmware keeps all
+motors **OFF** (`mask = 0x00`) as a fail-safe. An invalid stored direction
+(neither `0xFF` nor 0..7) is handled the same way. These are fault/stale-state
+cases and must not be conflated with a genuine TDoA `DIR_UNKNOWN` result.
 
-### Unknown-direction fallback (needs a team decision)
+### Unknown-direction behavior
 
-If DIR reported `0xFF` and a CMD still arrives (danger sound, no direction),
-firmware currently fires **all 8 motors** at the given intensity/pattern
-rather than staying silent. This is a placeholder default, not a confirmed
-UX decision -- a distinct "unknown direction" pattern might communicate
-better than "all directions at once". Flag for the team.
+If DIR reported `0xFF` and a CMD still arrives (danger sound, no resolved
+direction), firmware plays a dedicated four-cardinal sweep instead of the
+old `0xFF` all-motors-on fallback:
+
+`FRONT (0) -> RIGHT (2) -> BACK (4) -> LEFT (6)`
+
+Exactly one motor is active at a time. The current fixed sweep timing is
+`UNKNOWN_SWEEP_ON_MS = 80 ms` with `UNKNOWN_SWEEP_OFF_MS = 40 ms` between
+cardinal motors (the final step has no trailing gap). The CMD's `intensity`
+is used for the sweep, while the CMD's normal vibration `pattern` steps are
+not used for this special unknown-direction alert.
+
+This behavior is implemented in `motor_play_unknown_pattern()` and avoids
+the simultaneous eight-motor current spike of the previous fallback while
+still giving the wearer a distinct "danger detected, direction unresolved"
+alert.
 
 ## Units
 
@@ -149,7 +161,6 @@ regardless of hardware:**
      CMD-write path, but `laptop/ai_bridge.py::run_live_ai()` is still a stub.
      Resolve `classify_clip()` vs `judge()` and wire the authoritative live
      inference path before calling the system end-to-end complete.
-- [ ] Both sides: confirm the unknown-direction motor fallback above.
 - [ ] Both sides: `GATING_MS` in `config.h` currently drives the MCU cooldown
      (`COOLDOWN_FRAMES`), but there is still no shared constant with meit-ai.
      If the AI-side gating value changes, re-check that the MCU cooldown policy
