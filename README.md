@@ -153,7 +153,7 @@ LOLIN S3 +5V               DRV8833 x4 VM
 | RIGHT / LEFT `L/R` | 3V3 (Right slot) |
 | Mic supply | 3V3 / common GND |
 
-I2S0가 master로 BCLK/WS를 생성하고 I2S1이 slave로 같은 clock을 입력받습니다. 실제 배선에서는 `GPIO5 ↔ GPIO16`, `GPIO6 ↔ GPIO17`을 점퍼로 연결합니다. 구매 INMP441 breakout의 local decoupling은 실장 상태를 확인했으며, SD line pull-down은 실물 측정 후 추가 여부를 결정합니다.
+I2S0가 master로 BCLK/WS를 생성하고 I2S1이 slave로 같은 clock을 입력받습니다. 실제 배선에서는 `GPIO5 → GPIO16`, `GPIO6 → GPIO17` 방향으로 점퍼를 연결합니다. GPIO5/6은 I2S0 master의 BCLK/WS 출력이고, GPIO16/17은 I2S1 slave의 BCLK/WS 입력입니다. 구매 INMP441 breakout의 local decoupling은 실장 상태를 확인했으며, SD line pull-down은 실물 측정 후 추가 여부를 결정합니다.
 
 #### Motor stage
 
