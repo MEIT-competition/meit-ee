@@ -89,7 +89,7 @@ DRV8833 x4
 - 마이크: INMP441 x4 실사용 (+ 예비 2개, 총 6개 구매)
 - 모터 드라이버: Adafruit DRV8833 x4
 - 진동모터: 3 V ERM coin motor x8 실사용 (+ 예비 2개, 총 10개 구매)
-- 전원: TP4056 USB-C LiPo 충전 모듈 + 3.7V 2000mAh LiPo 배터리 (DTP634169), 모터 전원 노이즈 억제용 세라믹 커패시터 0.1uF/50V 다수
+- 전원: TP4056 USB-C LiPo 충전 모듈 + 3.7V 2000mAh LiPo 배터리 (DTP634169). Logic rail은 5 V boost 후보, motor rail은 1S LiPo 직결 후보로 검증 중
 - 방향 추정 샘플레이트: 48 kHz
 - AI 전송 오디오: 16 kHz mono PCM16
 - 통신: ESP32-S3 내장 BLE
@@ -107,11 +107,66 @@ DRV8833 x4
 
 ### 전원 설계 상태
 
-현재 가장 큰 하드웨어 미완료 항목은 **전원 경로 확정**입니다. 구매한 1S LiPo(3.7 V nominal)와 TP4056만으로 ESP32-S3와 모터 rail을 최종 구성하는 방식은 아직 확정하지 않았습니다. 선택하는 구조에 따라 boost 또는 buck-boost 계열 전원 모듈이 추가로 필요할 수 있으므로, 실제 조립 전에 전원 tree와 추가 BOM을 확정해야 합니다.
+전원부는 데이터시트와 실제 구매 부품을 기준으로 후보 구조까지 정리했으며, **실물 검증 전이라 최종 확정은 하지 않은 상태**입니다. 현재 기준은 다음과 같습니다.
 
-또한 LOLIN S3의 `+5V` 핀과 USB VBUS 사이의 실제 보드 회로는 공식 schematic으로 최종 확인하기 전까지 외부 5 V와 USB를 동시에 인가하지 않는 것을 원칙으로 합니다. ESP32-S3 reset/boot 중 DRV8833 입력이 뜨는 상황을 줄이기 위해 motor control 입력 8개에 10 kΩ pulldown을 추가하는 방안도 BOM 후보로 두고 있습니다.
+```text
+1S LiPo 3.7 V / 2000 mAh
+        │
+     TP4056
+        │
+   Main power switch
+      ┌─┴───────────────────────┐
+      │                         │
+Logic branch                Motor branch
+5 V boost 후보              LiPo direct 후보
+      │                         │
+LOLIN S3 +5V               DRV8833 x4 VM
+      │
+     3V3
+      │
+ INMP441 x4
+```
 
-소프트웨어 측에서는 `DIR_UNKNOWN`일 때 8개 모터를 동시에 켜던 동작을 제거하고, 앞/오른쪽/뒤/왼쪽 모터를 하나씩 순차 구동하는 sweep으로 변경해 순간 motor current 부담을 낮췄습니다. 다만 이는 **peak load 완화책**일 뿐이며, 1S LiPo에서 ESP32/DRV8833 rail을 어떻게 만들지에 대한 전원 설계 자체를 대체하지는 않습니다.
+- **Logic rail**: LOLIN S3 공식 schematic의 `+5V → ME6211C33 → 3V3` 경로를 기준으로, LiPo에서 `+5V` rail을 만들기 위한 **5 V boost**를 현재 후보로 두고 있습니다. 실제 boost 모듈/정격은 실물 전류 측정 후 확정합니다.
+- **Motor rail**: DRV8833 VM은 1S LiPo 전압 범위를 수용하며, 현재 firmware는 `MOTOR_SUPPLY_MV = 4200`, `MOTOR_RATED_MV = 3000`을 기준으로 duty cap을 약 71%로 제한합니다. 구매 ERM 모터는 3.0 V 정격, 80 mA 정격전류, 120 mA 최대 구속전류로 확인했습니다. 다만 raw LiPo 직결은 **candidate architecture**이며 실제 모터/전원 실측 후 확정합니다.
+- **DRV8833 breakout**: Adafruit breakout에는 VM 쪽 local capacitor와 current-limit 관련 회로가 이미 실장되어 있어 bare IC datasheet 기준 부품을 그대로 중복 추가하지 않습니다. 벨트 배선이 길어질 경우에만 driver 근처 bulk capacitor 보강을 검토합니다.
+- **GND**: logic/mic/motor는 공통 GND를 사용하되 motor high-current return과 mic/logic return이 같은 배선을 따라 흐르지 않도록 물리적으로 분리하고 source 근처에서 합류시키는 방향으로 배선합니다.
+- **TP4056 / battery protection**: 구매 모듈의 보호 IC(DW01/FS8205)와 load-sharing 지원 여부, LiPo 자체 PCM 여부는 실물 확인이 필요합니다. 확인 전에는 충전 중 부하 구동을 전제로 하지 않습니다.
+- **USB / external power**: 외부 5 V와 USB 전원은 동시에 인가하지 않는 것을 기본 원칙으로 유지합니다.
+- **Motor input pulldown**: ESP32 reset/boot 중 DRV8833 input floating을 줄이기 위해 motor PWM 8개 라인에 10 kΩ pulldown을 추가하는 방향으로 검토 중입니다.
+
+`DIR_UNKNOWN`은 전원 문제를 회피하기 위한 8모터 동시 출력이 아니라 **앞 → 오른쪽 → 뒤 → 왼쪽을 한 개씩 순차 구동하는 전용 sweep**으로 이미 변경했습니다. 이 변경은 peak current를 낮추지만 전원 rail 자체의 실물 검증을 대체하지 않습니다.
+
+### 회로 설계 요약
+
+현재 회로는 **4-mic dual-I2S front end / ESP32-S3 controller / DRV8833 x4 motor stage / power distribution**의 네 블록으로 정리되어 있습니다.
+
+#### Microphone front end
+
+| 기능 | 연결 |
+|---|---|
+| Shared BCLK | GPIO5 → INMP441 x4 + GPIO16 |
+| Shared WS | GPIO6 → INMP441 x4 + GPIO17 |
+| Pair A data | FRONT + RIGHT SD → GPIO7 |
+| Pair B data | BACK + LEFT SD → GPIO15 |
+| FRONT / BACK `L/R` | GND (Left slot) |
+| RIGHT / LEFT `L/R` | 3V3 (Right slot) |
+| Mic supply | 3V3 / common GND |
+
+I2S0가 master로 BCLK/WS를 생성하고 I2S1이 slave로 같은 clock을 입력받습니다. 실제 배선에서는 `GPIO5 ↔ GPIO16`, `GPIO6 ↔ GPIO17`을 점퍼로 연결합니다. 구매 INMP441 breakout의 local decoupling은 실장 상태를 확인했으며, SD line pull-down은 실물 측정 후 추가 여부를 결정합니다.
+
+#### Motor stage
+
+DRV8833 한 개가 모터 두 개를 담당하며 총 4개를 사용합니다. 각 motor channel은 한 input에 PWM을 넣고 반대 input은 GND에 고정합니다. `SLP`는 3V3에 strap합니다.
+
+| Driver | Motor A | Motor B |
+|---|---|---|
+| U1 | FRONT / GPIO1 | FRONT_RIGHT / GPIO2 |
+| U2 | RIGHT / GPIO13 | BACK_RIGHT / GPIO4 |
+| U3 | BACK / GPIO8 | BACK_LEFT / GPIO9 |
+| U4 | LEFT / GPIO10 | FRONT_LEFT / GPIO11 |
+
+정상 direction 0~7은 해당 motor 하나만 구동하고, 실제로 기록된 `DIR_UNKNOWN`은 four-cardinal sweep을 사용합니다. event_id lookup 실패/stale 또는 invalid direction은 motors OFF fail-safe로 처리합니다.
 
 ## 방향 인덱스
 
@@ -128,7 +183,7 @@ DRV8833 x4
 | 6 | 왼쪽 |
 | 7 | 왼쪽 앞 |
 
-방향을 안정적으로 판별하지 못하면 wire value로 `0xFF`(unknown)를 사용합니다. 이 경우 모터 8개를 동시에 켜지 않고 **앞 → 오른쪽 → 뒤 → 왼쪽(0 → 2 → 4 → 6)** cardinal motor를 하나씩 짧게 순차 진동시키는 전용 unknown sweep을 사용합니다.
+방향을 안정적으로 판별하지 못하면 wire value로 `0xFF`(unknown)를 사용합니다. 이 경우 모터 8개를 동시에 켜지 않고 **앞 → 오른쪽 → 뒤 → 왼쪽(0 → 2 → 4 → 6)** cardinal motor를 하나씩 순차 진동시키는 전용 unknown sweep을 사용합니다. 현재 설정은 motor당 **80 ms ON**, cardinal motor 사이 **40 ms OFF**입니다. AI가 보낸 intensity는 사용하지만 일반 CMD vibration pattern 대신 이 고정 sweep을 실행합니다.
 
 ## Python / host 테스트
 
@@ -417,7 +472,9 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | `config.h` | `MOTOR_SLEEP_GPIO = -1` | Adafruit DRV8833 SLP를 3V3에 strap, 펌웨어 미제어 |
 | `config.h` | `MOTOR_SUPPLY_MV = 4200` | raw LiPo 기준 worst-case motor rail 가정. 실제 VM 경로 확인 후 판단 |
 | `config.h` | `MOTOR_RATED_MV = 3000` | coin ERM 정격 3 V |
-| `config.h` | `MOTOR_DUTY_CAP` | 기본 182/255 ≈ 71%. 보수적 초기 duty 상한, 실물 검증 필요 |
+| `config.h` | `MOTOR_DUTY_CAP` | 기본 182/255 ≈ 71%. raw LiPo motor rail 후보 기준, 실물 검증 필요 |
+| `config.h` | `UNKNOWN_SWEEP_ON_MS = 80` | `DIR_UNKNOWN` cardinal motor 1개당 ON 시간 |
+| `config.h` | `UNKNOWN_SWEEP_OFF_MS = 40` | cardinal motor 사이 OFF gap |
 
 ## 현재 상태
 
@@ -444,14 +501,15 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
 | meit-ai live inference 연동 | AI 측 모델/decision 로직 준비됨 / `meit-ee` BLE live path와 adapter 연결 필요 |
 | 전체 end-to-end | 실물 통합 필요 |
-| 전원 구조 | **미확정 / 추가 전원 모듈·BOM 검토 필요** |
+| 회로 설계 | dual-I2S mic front end / DRV8833 x4 motor stage / power candidate 구조 정리 완료 / 실물 검증 필요 |
+| 전원 구조 | **후보 구조 정리 완료 / 5 V boost 선정·TP4056 보호회로·motor rail 실물 검증 필요** |
 | Hardware pin map | `firmware/PINMAP.md` 작성 / 코드·문서 간 GPIO 대조 완료 / 실물 배선 검증 필요 |
 | MPU6050 (optional/debug) | GPIO 예약(I2C 41/42)만 되어 있음 / driver 미구현 |
 | microSD logging (optional/debug) | GPIO 예약(SPI 12/14/18/21)만 되어 있음 / logging 코드 미구현 |
 
 ## 최신 스냅샷 요약
 
-현재 단계는 **코드 구조를 크게 바꾸는 단계보다 실물 검증과 통합 준비 단계**입니다. 핀맵, dual-I2S, TDoA production 구조, motor sequencer, BLE baseline은 유지하고 실제 부품이 도착한 뒤 하나씩 bring-up합니다. 지금 바로 우선할 일은 **전원 구조 확정 → live AI adapter 연결 → 실물 mic/motor/BLE 검증 → end-to-end 통합** 순서입니다.
+현재 단계는 **코드 구조를 크게 바꾸는 단계보다 회로/전원 확정과 실물 검증, 통합 준비 단계**입니다. 핀맵, dual-I2S, TDoA production 구조, motor sequencer, BLE baseline은 유지합니다. 회로 연결 구조는 정리되었고, 남은 핵심은 **5 V boost/TP4056/motor rail 검증 → live AI adapter 연결 → 실물 mic/TDoA/motor/BLE bring-up → end-to-end 통합**입니다.
 
 ## 실물 도착 전 / 도착 후 작업
 
@@ -459,8 +517,9 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 
 ### 부품 도착 전
 
-- **전원 tree 확정** — 1S LiPo → ESP32-S3 / DRV8833 / motor rail 구성과 필요한 boost·buck-boost 여부 결정
-- 10 kΩ pulldown 8개 등 추가 BOM 확정
+- **전원 tree 확정** — logic branch의 5 V boost 모듈 선정, motor rail LiPo direct 후보 실물 검증
+- TP4056 보호 IC/load-sharing 및 LiPo PCM 여부 확인
+- motor PWM 10 kΩ pulldown 8개 등 추가 BOM 확정
 - meit-ai의 실제 inference/decision 함수와 `laptop/ai_bridge.py` 연결
 - fake/saved audio를 사용해 AUDIO → AI → CMD encode 경로 검증
 - AI팀 250 ms vs 현재 firmware `GATING_MS=300` 불일치 해소
