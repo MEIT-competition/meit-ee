@@ -72,8 +72,8 @@ int motor_bit_for_direction(int dir_index)
 
 // This is what every test case actually inspects: what on_cmd() decided to
 // send into the motor layer.
-static uint8_t last_mask, last_intensity;
-static int play_calls;
+static uint8_t last_mask, last_intensity, last_unknown_intensity;
+static int play_calls, unknown_calls;
 void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
                         const motor_step_t *steps, int n_steps)
 {
@@ -81,6 +81,11 @@ void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
     last_mask = motor_mask;
     last_intensity = intensity_pct;
     play_calls++;
+}
+void motor_play_unknown_pattern(uint8_t intensity_pct)
+{
+    last_unknown_intensity = intensity_pct;
+    unknown_calls++;
 }
 
 // ---------------------------------------------------------------------
@@ -97,7 +102,9 @@ static void reset_capture(void)
 {
     last_mask = 0xAB;      // a value no real path should ever leave behind
     last_intensity = 0xAB;
+    last_unknown_intensity = 0xAB;
     play_calls = 0;
+    unknown_calls = 0;
     log_w_count = log_e_count = 0;
     last_w_msg[0] = last_e_msg[0] = '\0';
 }
@@ -113,6 +120,7 @@ int main(void)
     record_event_direction(11, 3);
     on_cmd(11, 42, 0, STEP, 1);
     CHECK(play_calls == 1);
+    CHECK(unknown_calls == 0);
     CHECK(last_mask == (uint8_t)(1u << 3));
     CHECK(last_intensity == 42);
     CHECK(log_w_count == 0 && log_e_count == 0);
@@ -124,6 +132,7 @@ int main(void)
     reset_capture();
     on_cmd(222 /* never recorded */, 77, 1, STEP, 1);
     CHECK(play_calls == 1);
+    CHECK(unknown_calls == 0);
     CHECK(last_mask == 0x00);
     CHECK(last_intensity == 77);            // fail-safe only changes the
                                              // mask, not the rest of the
@@ -146,6 +155,7 @@ int main(void)
                                                           // slot 0 again
     on_cmd(50 /* now evicted */, 30, 0, STEP, 1);
     CHECK(play_calls == 1);
+    CHECK(unknown_calls == 0);
     CHECK(last_mask == 0x00);
     CHECK(log_w_count == 1 && log_e_count == 0);
     printf("Case 3 (evicted event_id -> mask 0x00): %s\n",
@@ -153,16 +163,17 @@ int main(void)
 
     // ---- Case 4: genuine TDoA-confirmed DIR_UNKNOWN (a real, recorded
     // event whose direction TDoA legitimately could not resolve) ->
-    // mask 0xFF, UNCHANGED. This is the intentional use of 0xFF the fix
-    // must NOT touch. ----
+    // dedicated four-cardinal sequential sweep. This must NOT use the
+    // normal motor_play_pattern() path or the old 0xFF all-motors mask. ----
     int case4_before = failures;
     reset_capture();
     record_event_direction(88, DIR_UNKNOWN);
     on_cmd(88, 60, 2, STEP, 1);
-    CHECK(play_calls == 1);
-    CHECK(last_mask == 0xFF);
-    CHECK(log_w_count == 0 && log_e_count == 0);   // not an error -- no log
-    printf("Case 4 (recorded DIR_UNKNOWN -> mask 0xFF, unchanged): %s\n",
+    CHECK(play_calls == 0);
+    CHECK(unknown_calls == 1);
+    CHECK(last_unknown_intensity == 60);
+    CHECK(log_w_count == 0 && log_e_count == 0);
+    printf("Case 4 (recorded DIR_UNKNOWN -> four-cardinal sweep): %s\n",
            CASE_RESULT(case4_before));
 
     // ---- Case 5: corrupted/invalid stored direction (neither DIR_UNKNOWN
@@ -173,6 +184,7 @@ int main(void)
     record_event_direction(99, 42 /* not DIR_UNKNOWN, not 0..7 */);
     on_cmd(99, 10, 0, STEP, 1);
     CHECK(play_calls == 1);
+    CHECK(unknown_calls == 0);
     CHECK(last_mask == 0x00);
     CHECK(log_e_count == 1 && log_w_count == 0);   // this one is an ESP_LOGE
     printf("Case 5 (invalid stored direction -> mask 0x00): %s\n",
@@ -188,6 +200,7 @@ int main(void)
         if (last_mask != (uint8_t)(1u << d) || log_w_count || log_e_count)
             all_ok = 0;
         CHECK(last_mask == (uint8_t)(1u << d));
+        CHECK(unknown_calls == 0);
         CHECK(log_w_count == 0 && log_e_count == 0);
     }
     printf("Case 6 (all 8 directions, identity mapping intact): %s\n",

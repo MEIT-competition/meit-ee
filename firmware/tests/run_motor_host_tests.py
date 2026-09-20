@@ -88,13 +88,13 @@ def main():
             subprocess.run(command, check=True)
             print(f'RTOS tick rate: {hz} Hz; source: {source}', flush=True)
             passed = 0
-            for case in range(9):
+            for case in range(10):
                 run = subprocess.run([str(exe), str(case)], timeout=30)
                 passed += run.returncode == 0
                 if run.returncode:
                     print(f'Case {case}: exit={run.returncode}', flush=True)
                     result = 1
-            print(f'RESULT: {passed}/9 passed at {hz} Hz', flush=True)
+            print(f'RESULT: {passed}/10 passed at {hz} Hz', flush=True)
     return result
 
 if __name__ == '__main__':

@@ -97,6 +97,11 @@ static void expect_a(void) { CHECK(outputs==1); }
 static void burst(void) { play(1,100); play(2,100); play(4,100); play(8,200); }
 static void burst_and_tick(void) { burst(); motor_timer_cb(NULL); }
 static void expect_last(void) { CHECK(outputs==8); }
+static void play_unknown(void) { motor_play_unknown_pattern(80); }
+static void expect_front(void) { CHECK(outputs==(1u<<0)); }
+static void expect_right(void) { CHECK(outputs==(1u<<2)); }
+static void expect_back(void) { CHECK(outputs==(1u<<4)); }
+static void expect_left(void) { CHECK(outputs==(1u<<6)); }
 static void overflow_ticks(void)
 { for(int i=0;i<SEQ_QUEUE_LEN+1;i++) motor_timer_cb(NULL); }
 static void expect_drop(void) { CHECK(dropped_ticks==1); CHECK(outputs==0); }
@@ -134,6 +139,12 @@ static void prepare(int kind)
         suppress_callbacks=1;
         at(0,play_a); at(110,burst_and_tick);
         at(120,expect_last); at(250,expect_last); at(350,expect_off); break;
+    case 9: // DIR_UNKNOWN sweep: front -> right -> back -> left, one at a time.
+        at(0,play_unknown);
+        at(10,expect_front); at(90,expect_off);
+        at(130,expect_right); at(210,expect_off);
+        at(250,expect_back); at(330,expect_off);
+        at(370,expect_left); at(450,expect_off); break;
     }
 }
 int main(int argc, char **argv)
@@ -141,9 +152,10 @@ int main(int argc, char **argv)
     setvbuf(stdout,NULL,_IONBF,0);
     const char *names[]={"late_tick_after_drain", "inactive_tick", "tick_after_completion",
         "queue_full_and_lost_tick", "consecutive_play", "start_failure_and_tick",
-        "four_pairs_and_end_tick", "duplicate_due_ticks", "full_play_queue"};
+        "four_pairs_and_end_tick", "duplicate_due_ticks", "full_play_queue",
+        "unknown_cardinal_sweep"};
     int selected=argc>1?atoi(argv[1]):-1;
-    for(int i=0;i<9;i++) {
+    for(int i=0;i<10;i++) {
         if(selected>=0 && i!=selected) continue;
         now_us=timer_due=0; hw_armed=fail_start=false; outputs=0;
         timer_starts=on_transitions=0;

@@ -111,6 +111,8 @@ DRV8833 x4
 
 또한 LOLIN S3의 `+5V` 핀과 USB VBUS 사이의 실제 보드 회로는 공식 schematic으로 최종 확인하기 전까지 외부 5 V와 USB를 동시에 인가하지 않는 것을 원칙으로 합니다. ESP32-S3 reset/boot 중 DRV8833 입력이 뜨는 상황을 줄이기 위해 motor control 입력 8개에 10 kΩ pulldown을 추가하는 방안도 BOM 후보로 두고 있습니다.
 
+소프트웨어 측에서는 `DIR_UNKNOWN`일 때 8개 모터를 동시에 켜던 동작을 제거하고, 앞/오른쪽/뒤/왼쪽 모터를 하나씩 순차 구동하는 sweep으로 변경해 순간 motor current 부담을 낮췄습니다. 다만 이는 **peak load 완화책**일 뿐이며, 1S LiPo에서 ESP32/DRV8833 rail을 어떻게 만들지에 대한 전원 설계 자체를 대체하지는 않습니다.
+
 ## 방향 인덱스
 
 0을 정면으로 두고 시계방향으로 증가합니다.
@@ -126,7 +128,7 @@ DRV8833 x4
 | 6 | 왼쪽 |
 | 7 | 왼쪽 앞 |
 
-방향을 안정적으로 판별하지 못하면 `0xFF`(unknown)를 사용합니다.
+방향을 안정적으로 판별하지 못하면 wire value로 `0xFF`(unknown)를 사용합니다. 이 경우 모터 8개를 동시에 켜지 않고 **앞 → 오른쪽 → 뒤 → 왼쪽(0 → 2 → 4 → 6)** cardinal motor를 하나씩 짧게 순차 진동시키는 전용 unknown sweep을 사용합니다.
 
 ## Python / host 테스트
 
@@ -218,7 +220,7 @@ python firmware/tests/run_motor_host_tests.py --cc gcc
 python firmware/tests/timer_race_model.py
 ```
 
-`motor_host_test.c`는 production `motor.c`를 host stub 환경에서 직접 컴파일해 late/inactive tick, queue full, 연속 PLAY, timer failure 등의 시나리오를 확인합니다. 현재 기준 100 Hz / 1000 Hz 모두 9/9 통과하며 timer race model도 `ALL PASS`입니다. 실물 PWM/DRV8833 동작을 검증하는 테스트는 아닙니다.
+`motor_host_test.c`는 production `motor.c`를 host stub 환경에서 직접 컴파일해 late/inactive tick, queue full, 연속 PLAY, timer failure와 `DIR_UNKNOWN` four-cardinal sweep을 확인합니다. 현재 기준 100 Hz / 1000 Hz 모두 **10/10 통과**하며 timer race model도 `ALL PASS`입니다. 실물 PWM/DRV8833 동작을 검증하는 테스트는 아닙니다.
 
 ### Event-direction fail-safe host 테스트
 
@@ -226,16 +228,16 @@ python firmware/tests/timer_race_model.py
 python firmware/tests/run_event_direction_host_tests.py --cc gcc
 ```
 
-production `main.c`를 host stub 위에서 그대로 컴파일해 `event_id → direction → motor mask` 경로를 검증합니다. 현재 6개 시나리오, **33/33 checks 통과**입니다.
+production `main.c`를 host stub 위에서 그대로 컴파일해 `event_id → direction → motor output` 경로를 검증합니다. 현재 6개 시나리오, **46/46 checks 통과**입니다.
 
 - 정상 event_id → 기존 방향 mask 유지
 - 기록되지 않은 event_id → `0x00` (motors OFF)
 - EVENT_HISTORY에서 evict된 event_id → `0x00`
-- 정상적으로 기록된 `DIR_UNKNOWN` → 기존 의도대로 `0xFF` 유지
+- 정상적으로 기록된 `DIR_UNKNOWN` → 8모터 동시 `0xFF` 출력 대신 four-cardinal sequential sweep 호출
 - 비정상 direction 값 → `0x00` + error log
 - 방향 0~7 → 기존 identity mapping 유지
 
-즉 lookup/timing 오류가 더 이상 8개 모터 전체 ON으로 변환되지 않도록 fail-safe를 적용했고, 정상 `DIR_UNKNOWN` 동작과는 분리했습니다.
+즉 lookup/timing 오류는 motors OFF로 fail-safe 처리하고, 정상 `DIR_UNKNOWN`은 **앞 → 오른쪽 → 뒤 → 왼쪽을 한 개씩 순차 진동**하도록 분리했습니다. 한 번에 하나의 모터만 구동하므로 기존 `0xFF` 8모터 동시 출력보다 peak current 부담도 줄였습니다.
 
 ## ESP32-S3 펌웨어 빌드
 
@@ -431,8 +433,8 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | Laptop BLE receiver | 구현 / 실물 ESP32 연결 필요 |
 | Laptop BLE unit/regression test | 17 tests 통과 |
 | Live AI bridge | 인터페이스 구현 / meit-ai 모델·decision 코드와 adapter 연결 필요 |
-| DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 9/9 @100 Hz·9/9 @1000 Hz / 실물 미검증 |
-| event_id → motor fail-safe | 구현 / host test 33/33 checks 통과 |
+| DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 10/10 @100 Hz·10/10 @1000 Hz / unknown cardinal sweep 포함 / 실물 미검증 |
+| event_id → motor fail-safe / unknown sweep | 구현 / host test 46/46 checks 통과 |
 | dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |
 | motor self-test app | 구현 / build 통과 / 실물 측정 필요 |
 | serial dump parser / calibration CLI | 구현 / parser 테스트 통과 |

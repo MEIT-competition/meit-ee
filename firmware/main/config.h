@@ -152,6 +152,8 @@ extern const int MOTOR_GPIO[8];   // verify against the actual LOLIN S3 wiring
                                  // if it changes, PATTERN_MAX_PAIRS below
                                  // may need to grow (siren FULL = 3 pairs).
 #define PATTERN_MAX_PAIRS 4
+#define UNKNOWN_SWEEP_ON_MS  80   // DIR_UNKNOWN: one cardinal motor at a time
+#define UNKNOWN_SWEEP_OFF_MS 40   // gap between cardinal motors
 
 // meit-ai classifier/adapter.py CLASSES = ["horn","siren","crash","normal"].
 // "normal" never reaches firmware -- decision/judge.py returns None for it.

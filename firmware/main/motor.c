@@ -28,8 +28,9 @@ static const int DIR_TO_MOTOR[8] = {0, 1, 2, 3, 4, 5, 6, 7};   // VERIFY wiring
 // state needs none of those, by construction.
 static esp_timer_handle_t pattern_timer;
 static motor_step_t steps_buf[PATTERN_MAX_PAIRS];
+static uint8_t step_masks_buf[PATTERN_MAX_PAIRS];
 static int step_count, step_idx;
-static uint8_t active_mask, active_duty;
+static uint8_t active_duty;
 static bool step_is_on;
 static bool timer_armed;
 static int64_t step_deadline_us; // task-owned; TICK is only a wake-up hint
@@ -43,10 +44,10 @@ static TaskHandle_t  seq_task_handle;
 typedef enum { SEQ_MSG_TICK, SEQ_MSG_PLAY } seq_msg_type_t;
 typedef struct {
     seq_msg_type_t type;
-    uint8_t  motor_mask;      // SEQ_MSG_PLAY only
     uint8_t  intensity_pct;   // SEQ_MSG_PLAY only, already clamped 0..100
     int      n_steps;         // SEQ_MSG_PLAY only
-    motor_step_t steps[PATTERN_MAX_PAIRS];   // SEQ_MSG_PLAY only
+    uint8_t  step_masks[PATTERN_MAX_PAIRS]; // one mask per ON step
+    motor_step_t steps[PATTERN_MAX_PAIRS];  // timing for each ON/OFF step
 } seq_msg_t;
 
 static void motor_seq_task(void *arg);
@@ -213,19 +214,19 @@ static void advance_step(void)
 {
     if (step_count <= 0 || step_idx >= step_count) return;
     if (step_is_on) {
-        apply_mask(active_mask, 0);                    // turn off
+        apply_mask(step_masks_buf[step_idx], 0);         // turn current step off
         step_is_on = false;
         uint32_t off_ms = steps_buf[step_idx].off_ms;
         step_idx++;
-        if (step_idx >= step_count) {                   // pattern done
-            timer_armed = false;                        // nothing re-armed
+        if (step_idx >= step_count) {                    // pattern done
+            timer_armed = false;                         // nothing re-armed
             return;
         }
         if (!schedule(off_ms)) {
             force_all_off_and_reset();
         }
     } else {
-        apply_mask(active_mask, active_duty);           // turn on
+        apply_mask(step_masks_buf[step_idx], active_duty); // turn this step on
         step_is_on = true;
         if (!schedule(steps_buf[step_idx].on_ms)) {
             force_all_off_and_reset();
@@ -247,9 +248,9 @@ static void handle_play(const seq_msg_t *m)
     apply_mask(0xFF, 0);
 
     memcpy(steps_buf, m->steps, sizeof(motor_step_t) * m->n_steps);
+    memcpy(step_masks_buf, m->step_masks, sizeof(uint8_t) * m->n_steps);
     step_count  = m->n_steps;
     step_idx    = 0;
-    active_mask = m->motor_mask;
     active_duty = intensity_to_duty(m->intensity_pct, 100);
     step_is_on  = false;
     advance_step();   // fires the first ON immediately, for its full on_ms
@@ -282,13 +283,13 @@ static void motor_seq_task(void *arg)
     }
 }
 
-void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
-                        const motor_step_t *steps, int n_steps)
+static void queue_pattern(const uint8_t *step_masks, uint8_t intensity_pct,
+                          const motor_step_t *steps, int n_steps)
 {
-    if (n_steps <= 0 || steps == NULL) return;
+    if (n_steps <= 0 || steps == NULL || step_masks == NULL) return;
     if (n_steps > PATTERN_MAX_PAIRS) n_steps = PATTERN_MAX_PAIRS;
     if (!seq_queue) {
-        ESP_LOGE(TAG, "motor_play_pattern before motor_init()");
+        ESP_LOGE(TAG, "motor pattern requested before motor_init()");
         return;
     }
     // Treat BLE input as untrusted and clamp to the protocol range.
@@ -299,12 +300,47 @@ void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
     }
 
     seq_msg_t m = {
-        .type = SEQ_MSG_PLAY, .motor_mask = motor_mask,
+        .type = SEQ_MSG_PLAY,
         .intensity_pct = intensity_pct, .n_steps = n_steps,
     };
+    memcpy(m.step_masks, step_masks, sizeof(uint8_t) * n_steps);
     memcpy(m.steps, steps, sizeof(motor_step_t) * n_steps);
 
     // motor_seq_task owns execution; this API only queues the command.
     if (xQueueSend(seq_queue, &m, portMAX_DELAY) != pdTRUE)
         ESP_LOGE(TAG, "failed to queue motor pattern");
+}
+
+void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
+                        const motor_step_t *steps, int n_steps)
+{
+    if (n_steps <= 0 || steps == NULL) return;
+    if (n_steps > PATTERN_MAX_PAIRS) n_steps = PATTERN_MAX_PAIRS;
+
+    uint8_t step_masks[PATTERN_MAX_PAIRS];
+    for (int i = 0; i < n_steps; i++) step_masks[i] = motor_mask;
+    queue_pattern(step_masks, intensity_pct, steps, n_steps);
+}
+
+void motor_play_unknown_pattern(uint8_t intensity_pct)
+{
+    static const int cardinal_dirs[4] = {0, 2, 4, 6}; // front, right, back, left
+    uint8_t step_masks[4];
+    motor_step_t steps[4];
+
+    for (int i = 0; i < 4; i++) {
+        int bit = motor_bit_for_direction(cardinal_dirs[i]);
+        if (bit < 0) {
+            ESP_LOGE(TAG, "invalid cardinal direction mapping dir=%d; "
+                         "unknown-direction alert suppressed", cardinal_dirs[i]);
+            return;
+        }
+        step_masks[i] = (uint8_t)(1u << bit);
+        steps[i].on_ms = UNKNOWN_SWEEP_ON_MS;
+        steps[i].off_ms = (i == 3) ? 0 : UNKNOWN_SWEEP_OFF_MS;
+    }
+
+    // Exactly one motor is active at a time, so DIR_UNKNOWN no longer causes
+    // the old 0xFF eight-motor simultaneous current spike.
+    queue_pattern(step_masks, intensity_pct, steps, 4);
 }

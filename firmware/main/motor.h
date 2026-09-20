@@ -24,3 +24,8 @@ int motor_bit_for_direction(int dir_index);
 // intensity_pct is 0..100. A new pattern replaces the active pattern.
 void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
                         const motor_step_t *steps, int n_steps);
+
+// DIR_UNKNOWN alert: sweep the four cardinal motors sequentially
+// (front -> right -> back -> left), one motor at a time, to avoid the
+// 8-motor simultaneous current spike of the old 0xFF fallback.
+void motor_play_unknown_pattern(uint8_t intensity_pct);
