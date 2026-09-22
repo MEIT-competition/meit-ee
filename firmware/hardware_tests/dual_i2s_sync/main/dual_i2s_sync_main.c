@@ -19,7 +19,7 @@ void app_main(void)
     const size_t samples_per_channel = (size_t)CAPTURE_FRAMES * FRAME_LEN;
     const size_t total_samples = (size_t)NUM_MICS * samples_per_channel;
     float *capture = heap_caps_malloc(total_samples * sizeof(*capture),
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                  MALLOC_CAP_8BIT);
     if (capture == NULL) {
         ESP_LOGE(TAG, "PSRAM allocation failed for %u samples",
                  (unsigned)total_samples);
