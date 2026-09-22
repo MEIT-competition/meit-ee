@@ -146,7 +146,7 @@ extern const int MOTOR_GPIO[8];   // verify against the actual LOLIN S3 wiring
 // Keep these in sync with meit-ai by hand -- there is no shared repo for it.
 // See firmware/PROTOCOL.md for the exact byte layout this backs.
 #define DIR_UNKNOWN       0xFF   // wire value for "direction: -1" (판별 불가)
-#define GATING_MS         300    // meit-ai decision/patterns.py GATING_MS.
+#define GATING_MS         250    // meit-ai decision/patterns.py GATING_MS.
                                  // Only affects which pattern length the AI
                                  // side chooses; nothing here reads it, but
                                  // if it changes, PATTERN_MAX_PAIRS below
@@ -161,7 +161,7 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
       SOUND_CLASS_NONE = 0xFF };
 
 // --- Per-event audio clip ---
-#define CLIP_FRAMES       24   // ~0.5 s of audio per event
+#define CLIP_FRAMES 120   // ~0.5 s of audio per event
 // Computed as (FRAME_LEN * CLIP_FRAMES) / DECIM, NOT (FRAME_LEN/DECIM) *
 // CLIP_FRAMES -- the latter truncates 1024/3 to 341 before multiplying,
 // undercounting by 24 samples over 24 frames vs. what resample_48k_to_16k
