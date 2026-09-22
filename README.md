@@ -89,7 +89,7 @@ DRV8833 x4
 - 마이크: INMP441 x4 실사용 (+ 예비 2개, 총 6개 구매)
 - 모터 드라이버: Adafruit DRV8833 x4
 - 진동모터: 3 V ERM coin motor x8 실사용 (+ 예비 2개, 총 10개 구매)
-- 전원: TP4056 USB-C LiPo 충전 모듈 + 3.7V 2000mAh LiPo 배터리 (DTP634169). Logic rail은 5 V boost 후보, motor rail은 1S LiPo 직결 후보로 검증 중
+- 전원: 현재 실물 bring-up에서는 **4×AA 배터리팩을 모터 전원용으로 사용**하고 ESP32-S3는 USB-C로 별도 전원 공급. 배터리팩의 `+`는 DRV8833 x4의 VM 공통선, `-`는 공통 GND에 연결하며 ESP32 GND도 같은 GND를 공유합니다. 기존 3.7 V 2000 mAh LiPo + TP4056 구성은 현재 조립본에서는 사용하지 않습니다.
 - 방향 추정 샘플레이트: 48 kHz
 - AI 전송 오디오: 16 kHz mono PCM16
 - 통신: ESP32-S3 내장 BLE
@@ -107,35 +107,30 @@ DRV8833 x4
 
 ### 전원 설계 상태
 
-전원부는 데이터시트와 실제 구매 부품을 기준으로 후보 구조까지 정리했으며, **실물 검증 전이라 최종 확정은 하지 않은 상태**입니다. 현재 기준은 다음과 같습니다.
+현재 실물 bring-up에서는 **ESP32와 모터 전원을 분리**해서 사용합니다.
 
 ```text
-1S LiPo 3.7 V / 2000 mAh
-        │
-     TP4056
-        │
-   Main power switch
-      ┌─┴───────────────────────┐
-      │                         │
-Logic branch                Motor branch
-5 V boost 후보              LiPo direct 후보
-      │                         │
-LOLIN S3 +5V               DRV8833 x4 VM
-      │
-     3V3
-      │
- INMP441 x4
+Laptop USB-C
+    │
+    └──► LOLIN S3 / ESP32-S3
+             │
+             ├── 3V3 ──► INMP441 x4
+             └── GND ─────────────┐
+                                  │ common GND
+4×AA battery pack                 │
+    ├── (+) ──► DRV8833 x4 VM     │
+    └── (-) ──────────────────────┘
+
+ESP32 GPIO ──► DRV8833 AIN/BIN
+ESP32 3V3 ──► DRV8833 SLP x4
 ```
 
-- **Logic rail**: LOLIN S3 공식 schematic의 `+5V → ME6211C33 → 3V3` 경로를 기준으로, LiPo에서 `+5V` rail을 만들기 위한 **5 V boost**를 현재 후보로 두고 있습니다. 실제 boost 모듈/정격은 실물 전류 측정 후 확정합니다.
-- **Motor rail**: DRV8833 VM은 1S LiPo 전압 범위를 수용하며, 현재 firmware는 `MOTOR_SUPPLY_MV = 4200`, `MOTOR_RATED_MV = 3000`을 기준으로 duty cap을 약 71%로 제한합니다. 구매 ERM 모터는 3.0 V 정격, 80 mA 정격전류, 120 mA 최대 구속전류로 확인했습니다. 다만 raw LiPo 직결은 **candidate architecture**이며 실제 모터/전원 실측 후 확정합니다.
-- **DRV8833 breakout**: Adafruit breakout에는 VM 쪽 local capacitor와 current-limit 관련 회로가 이미 실장되어 있어 bare IC datasheet 기준 부품을 그대로 중복 추가하지 않습니다. 벨트 배선이 길어질 경우에만 driver 근처 bulk capacitor 보강을 검토합니다.
-- **GND**: logic/mic/motor는 공통 GND를 사용하되 motor high-current return과 mic/logic return이 같은 배선을 따라 흐르지 않도록 물리적으로 분리하고 source 근처에서 합류시키는 방향으로 배선합니다.
-- **TP4056 / battery protection**: 구매 모듈의 보호 IC(DW01/FS8205)와 load-sharing 지원 여부, LiPo 자체 PCM 여부는 실물 확인이 필요합니다. 확인 전에는 충전 중 부하 구동을 전제로 하지 않습니다.
-- **USB / external power**: 외부 5 V와 USB 전원은 동시에 인가하지 않는 것을 기본 원칙으로 유지합니다.
-- **Motor input pulldown**: ESP32 reset/boot 중 DRV8833 input floating을 줄이기 위해 motor PWM 8개 라인에 10 kΩ pulldown을 추가하는 방향으로 검토 중입니다.
-
-`DIR_UNKNOWN`은 전원 문제를 회피하기 위한 8모터 동시 출력이 아니라 **앞 → 오른쪽 → 뒤 → 왼쪽을 한 개씩 순차 구동하는 전용 sweep**으로 이미 변경했습니다. 이 변경은 peak current를 낮추지만 전원 rail 자체의 실물 검증을 대체하지 않습니다.
+- **현재 배터리 변경**: 기존 1S LiPo + TP4056 후보 구조 대신, 조립/bring-up 단계에서는 4×AA 배터리팩을 DRV8833 motor rail에 사용합니다.
+- **ESP32 전원**: ESP32-S3는 USB-C로 전원을 공급하며 배터리 `+`를 ESP32의 3V3/5V에 연결하지 않습니다. ESP32와 motor rail은 **GND만 공통**으로 사용합니다.
+- **DRV8833**: 4개 드라이버의 VM은 하나의 motor supply node로 묶고, GND도 공통으로 묶습니다. SLP는 3V3에 strap합니다.
+- **모터 실물 검증 전**: 회로 배선은 완료했지만 모터 8개 실제 구동은 아직 확인하지 않았습니다.
+- **중요 — firmware 전원값 미확정**: 현재 `config.h`의 `MOTOR_SUPPLY_MV = 4200` / duty cap은 기존 LiPo 가정값입니다. AA 셀 종류와 실제 pack voltage를 확인하기 전에는 이 값을 최종값으로 보지 않으며, motor self-test 전에 반드시 맞춰야 합니다.
+- **전압 실측 미완료**: 현재 멀티미터가 없어 pack voltage, motor rail sag, driver 발열/brownout은 아직 측정하지 못했습니다.
 
 ### 회로 설계 요약
 
@@ -153,7 +148,9 @@ LOLIN S3 +5V               DRV8833 x4 VM
 | RIGHT / LEFT `L/R` | 3V3 (Right slot) |
 | Mic supply | 3V3 / common GND |
 
-I2S0가 master로 BCLK/WS를 생성하고 I2S1이 slave로 같은 clock을 입력받습니다. 실제 배선에서는 `GPIO5 → GPIO16`, `GPIO6 → GPIO17` 방향으로 점퍼를 연결합니다. GPIO5/6은 I2S0 master의 BCLK/WS 출력이고, GPIO16/17은 I2S1 slave의 BCLK/WS 입력입니다. 구매 INMP441 breakout의 local decoupling은 실장 상태를 확인했으며, SD line pull-down은 실물 측정 후 추가 여부를 결정합니다.
+I2S0가 master로 GPIO5(BCLK) / GPIO6(WS)을 생성합니다. 초기 slave-clock 구조에서는 I2S1이 timeout 되었고, 현재 firmware는 **GPIO Matrix를 사용해 GPIO5/6의 clock을 I2S1 입력으로 내부 loopback**하는 방식으로 수정했습니다. 이 수정 후 I2S0/I2S1 양쪽 DMA read는 정상 동작합니다. 따라서 현재 firmware는 I2S1 clock 수신을 위해 GPIO16/17 물리 점퍼에 의존하지 않습니다.
+
+다만 실제 INMP441 4개를 연결한 수음은 아직 해결되지 않았습니다. 48 kHz와 16 kHz에서 모두 실제 mic RAW가 `0x00000000`으로 유지되었고, 내부 constant-one/constant-zero 주입 테스트는 두 I2S 모두 정상 통과했습니다. 즉 ESP32 내부 `GPIO Matrix → I2S → DMA` 경로는 확인되었지만, 실제 mic SD 출력은 아직 관측되지 않았습니다. 전원/clock/SD 외부 경로는 측정 장비가 없어 추가 확인이 필요합니다.
 
 #### Motor stage
 
@@ -167,6 +164,8 @@ DRV8833 한 개가 모터 두 개를 담당하며 총 4개를 사용합니다. �
 | U4 | LEFT / GPIO10 | FRONT_LEFT / GPIO11 |
 
 정상 direction 0~7은 해당 motor 하나만 구동하고, 실제로 기록된 `DIR_UNKNOWN`은 four-cardinal sweep을 사용합니다. event_id lookup 실패/stale 또는 invalid direction은 motors OFF fail-safe로 처리합니다.
+
+현재 실물에서는 DRV8833 x4 + ERM motor x8 배선까지 완료했으며, **실제 motor self-test는 아직 실행하지 않았습니다.** 따라서 GPIO-to-motor 위치, 기동 duty, 진동 세기, driver 발열, battery rail 안정성은 모두 미검증 상태입니다.
 
 ## 방향 인덱스
 
@@ -318,7 +317,7 @@ idf.py build
 
 ## Dual-I2S sync bring-up
 
-4개의 INMP441을 실제로 연결한 뒤 두 I2S peripheral 사이의 고정 sample skew를 측정하기 위한 별도 test app이 있습니다.
+4개의 INMP441과 dual-I2S 구조를 검증하기 위한 별도 test app이 있습니다. 현재 bring-up에서 I2S1 slave timeout은 GPIO5/6 clock을 GPIO Matrix로 I2S1에 내부 loopback하는 방식으로 해결했으며, 두 버스 모두 DMA read가 되는 것까지 확인했습니다. 다만 실제 microphone sample은 아직 0으로 들어오므로 sample skew/TDoA 실측 단계까지는 진행하지 못했습니다.
 
 ### 1. test app 빌드/flash
 
@@ -493,54 +492,51 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | DRV8833 진동 패턴 sequencer | 구현 / host 회귀 테스트 10/10 @100 Hz·10/10 @1000 Hz / unknown cardinal sweep 포함 / 실물 미검증 |
 | event_id → motor fail-safe / unknown sweep | 구현 / host test 46/46 checks 통과 |
 | dual-I2S sync test app | 구현 / build 통과 / 실물 측정 필요 |
-| motor self-test app | 구현 / build 통과 / 실물 측정 필요 |
+| motor self-test app | 구현 / build 통과 / **회로 배선 완료, 실제 모터 구동은 아직 미확인** |
 | serial dump parser / calibration CLI | 구현 / parser 테스트 통과 |
-| 실제 INMP441 4채널 수음 | 실물 검증 필요 |
-| 실제 dual-I2S sample sync | 실물 검증 필요 |
+| 실제 INMP441 4채널 수음 | **미해결** — dual-I2S DMA는 정상, 실제 mic RAW는 48/16 kHz 모두 0 |
+| 실제 dual-I2S sample sync | **대기** — 두 DMA read 성공, 실제 mic signal 확보 후 skew 측정 필요 |
 | 실제 8방향 정확도 | 실물 검증 필요 |
 | BLE 실제 throughput / MTU / loss | 실물 검증 필요 |
 | meit-ai live inference 연동 | AI 측 모델/decision 로직 준비됨 / `meit-ee` BLE live path와 adapter 연결 필요 |
 | 전체 end-to-end | 실물 통합 필요 |
-| 회로 설계 | dual-I2S mic front end / DRV8833 x4 motor stage / power candidate 구조 정리 완료 / 실물 검증 필요 |
-| 전원 구조 | **후보 구조 정리 완료 / 5 V boost 선정·TP4056 보호회로·motor rail 실물 검증 필요** |
+| 회로 설계 | mic + DRV8833 x4 + motor x8 실물 배선 완료 / mic 수음 미해결 / motor 구동 미확인 |
+| 전원 구조 | **현재 motor rail은 4×AA pack으로 변경 / ESP32는 USB-C / common GND / firmware motor supply 값 재설정 필요** |
 | Hardware pin map | `firmware/PINMAP.md` 작성 / 코드·문서 간 GPIO 대조 완료 / 실물 배선 검증 필요 |
 | MPU6050 (optional/debug) | GPIO 예약(I2C 41/42)만 되어 있음 / driver 미구현 |
 | microSD logging (optional/debug) | GPIO 예약(SPI 12/14/18/21)만 되어 있음 / logging 코드 미구현 |
 
 ## 최신 스냅샷 요약
 
-현재 단계는 **코드 구조를 크게 바꾸는 단계보다 회로/전원 확정과 실물 검증, 통합 준비 단계**입니다. 핀맵, dual-I2S, TDoA production 구조, motor sequencer, BLE baseline은 유지합니다. 회로 연결 구조는 정리되었고, 남은 핵심은 **5 V boost/TP4056/motor rail 검증 → live AI adapter 연결 → 실물 mic/TDoA/motor/BLE bring-up → end-to-end 통합**입니다.
+현재는 **실물 회로 bring-up 단계**입니다. ESP32 내부 dual-I2S 구조와 DMA는 동작하며, I2S1 slave timeout은 GPIO Matrix clock loopback으로 해결했습니다. 하지만 실제 INMP441 데이터는 아직 들어오지 않아 mic/TDoA 실측은 대기 상태입니다. 모터 쪽은 DRV8833 x4, motor x8, SLP/GND/VM 배선까지 완료했지만 실제 motor self-test는 아직 실행하지 않았습니다. motor power는 기존 LiPo 후보에서 **4×AA battery pack**으로 변경했으며, 셀 종류/pack voltage 확인 후 firmware의 motor supply/duty cap을 맞춰야 합니다.
 
-## 실물 도착 전 / 도착 후 작업
+## 2026-09-23 실물 bring-up / troubleshooting
 
-현재 MCU를 포함한 실제 모듈이 아직 도착하지 않아 flash/boot/BLE/mic/motor 실물 검증은 시작하지 않은 상태입니다. 부품 도착 전에는 meit-ai live adapter 연결과 protocol-level 통합 테스트를 우선 진행합니다.
+### Microphone / dual-I2S
 
-### 부품 도착 전
+- 초기 문제: I2S0 master는 동작하지만 I2S1 slave `i2s_channel_read()`가 timeout.
+- 해결: GPIO5(BCLK) / GPIO6(WS)을 GPIO Matrix로 I2S1 clock input에 내부 loopback. 이후 양쪽 I2S DMA read 성공.
+- 내부 입력 검증: `CONST_ONE` 주입 시 A/B 모두 `0xFFFFFFFF`, `CONST_ZERO` 주입 시 A/B 모두 `0x00000000`으로 정상 수신.
+- 실제 microphone: FRONT/RIGHT/BACK/LEFT 모두 RAW 0, RMS -240 dBFS.
+- 48 kHz뿐 아니라 16 kHz에서도 동일하게 RAW 0.
+- SD pull test에서 pull-up 시 raw가 all-ones, pull-down 시 all-zero로 따라가 실제 mic의 능동 SD 구동은 아직 관측되지 않음.
+- 결론: ESP32 내부 I2S/DMA 문제는 상당 부분 배제했지만, 실제 mic power/clock/data 외부 경로는 측정 장비 없이 확정하지 못함.
 
-- **전원 tree 확정** — logic branch의 5 V boost 모듈 선정, motor rail LiPo direct 후보 실물 검증
-- TP4056 보호 IC/load-sharing 및 LiPo PCM 여부 확인
-- motor PWM 10 kΩ pulldown 8개 등 추가 BOM 확정
-- meit-ai의 실제 inference/decision 함수와 `laptop/ai_bridge.py` 연결
-- fake/saved audio를 사용해 AUDIO → AI → CMD encode 경로 검증
-- AI팀 250 ms vs 현재 firmware `GATING_MS=300` 불일치 해소
-- binary `CMD` field mapping (`event_id`, `intensity`, `sound_class`, `pattern`) 최종 합의
-- 9/24까지 각 파트 단독 동작 확인, 9/28 전체 통합 목표
+### Motor / power
 
-### 부품 도착 후 bring-up 순서
+- DRV8833 x4와 ERM motor x8 회로 배선 완료.
+- DRV8833 SLP x4는 ESP32 3V3, GND는 ESP32와 motor battery common GND.
+- motor supply는 기존 1S LiPo 후보에서 **4×AA battery pack**으로 변경. battery `+`는 DRV8833 VM common node, battery `-`는 common GND. ESP32는 USB-C로 별도 전원 공급.
+- **실제 모터 구동은 아직 확인하지 않음.** 회로 작업까지만 완료.
+- 셀 종류/pack voltage를 아직 실측하지 못했으므로 `MOTOR_SUPPLY_MV`와 duty cap은 motor self-test 전에 재설정 필요.
 
-1. **ESP32-S3 단독 부팅/flash** — Flash/PSRAM 감지, 로그, reset 여부 확인
+## 다음 작업 순서
 
-2. **INMP441 2개 → 4개 수음** — channel ordering, L/R slot, short read 여부 확인
+1. **AA pack 사양 확인 + motor firmware 전원값 수정** — cell type / nominal pack voltage를 확인한 뒤 `MOTOR_SUPPLY_MV`, duty cap을 맞춥니다.
+2. **Motor self-test** — 한 번에 motor 1개씩 0→7 순서로 구동해 위치 mapping, 최소 기동 duty, driver/battery 이상 여부를 확인합니다.
+3. **Microphone hardware 재검증** — 멀티미터/logic analyzer 확보 후 VDD, BCLK, WS, SD를 실제 mic 단자 기준으로 확인합니다.
+4. **실제 TDoA calibration** — mic signal 확보 후 dual-I2S sample skew와 8방향 정확도를 측정합니다.
+5. **BLE hardware validation** — advertising/connection/MTU/AUDIO/DIR/CMD를 실물에서 확인합니다.
+6. **meit-ai end-to-end integration** — AUDIO/DIR → AI → CMD → motor까지 통합합니다.
 
-3. **dual-I2S sync 측정** — `hardware_tests/dual_i2s_sync` + `parse_dump.py` + `calibration.py`
-
-4. **실제 TDoA 8방향 측정** — `MIC_RADIUS_M`, channel 위치, confidence 분포 실측
-
-5. **DRV8833 + 모터 1개 → 8개** — `hardware_tests/motor_self_test`, 최소 기동 intensity/전원 안정성 확인. 기본 15%에서 모터가 돌지 않더라도 바로 배선 불량으로 판단하지 말고 intensity를 단계적으로 올려 최소 기동점을 찾습니다.
-
-6. **BLE 실측** — `firmware/main/ble_svc.c`는 이미 production build에 merge/포함되어 있습니다 (build만 통과, 실물 미검증 상태). 남은 작업은 코드 병합이 아니라 advertising, connection, MTU, AUDIO 전송 시간, chunk loss 등 실측입니다.
-   - 노트북 측은 먼저 `python -m laptop.ble_receiver --mock-ai`로 AUDIO/DIR 수신 → chunk 재조립 → CMD write 경로를 검증합니다.
-
-7. **meit-ai 통합** — AUDIO/DIR → AI 판단 → CMD → 해당 방향 진동 end-to-end 테스트
-
-실물에서 문제가 확인되기 전에는 TDoA/resampler/motor production 구조를 추측으로 크게 변경하지 않는 것을 원칙으로 합니다.
+실물에서 문제가 확인되기 전에는 이미 통과한 TDoA/resampler/motor host/BLE protocol 구조를 추측으로 크게 변경하지 않는 것을 원칙으로 합니다.
