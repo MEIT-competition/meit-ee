@@ -1,4 +1,13 @@
 idf_component_register(
-    SRCS "dual_i2s_sync_main.c" "../../../main/audio_capture.c"
-    INCLUDE_DIRS "." "../../../main"
-    REQUIRES driver heap)
+    SRCS
+        "dual_i2s_sync_main.c"
+        "../../../main/audio_capture.c"
+    INCLUDE_DIRS
+        "."
+        "../../../main"
+    REQUIRES
+        driver
+        heap
+        esp_rom
+        soc
+)
