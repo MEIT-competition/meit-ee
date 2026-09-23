@@ -13,9 +13,13 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/idf_additions.h"   // xQueueCreateWithCaps
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "config.h"
@@ -35,6 +39,27 @@ const int MOTOR_GPIO[8] = {1, 2, 13, 4, 8, 9, 10, 11};
 
 typedef struct { int16_t pcm[CLIP_OUT_SAMPLES]; int n; uint8_t event_id; } clip_t;
 static QueueHandle_t q;
+
+// clip_t is ~82 KB (2.56 s of 16 kHz PCM16). Two static working copies plus a
+// 2-deep queue would need ~330 KB of INTERNAL RAM: static .bss is internal,
+// and plain xQueueCreate() allocates via pvPortMalloc(), which ESP-IDF 5.2
+// pins to MALLOC_CAP_INTERNAL (components/freertos/heap_idf.c) regardless of
+// CONFIG_SPIRAM_USE_MALLOC. That does not fit alongside NimBLE. All clip
+// storage therefore lives in the 8 MB PSRAM: allocated once in app_main(),
+// before any task that uses it is created. Nothing here is touched by DMA.
+static clip_t *cap_clip;   // capture_task's working clip (only writer)
+static clip_t *ble_clip;   // ble_task's receive buffer (only reader)
+
+static clip_t *alloc_clip_psram(const char *what)
+{
+    clip_t *c = heap_caps_calloc(1, sizeof(clip_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!c) {
+        ESP_LOGE(TAG, "PSRAM alloc for %s (%u bytes) failed -- is PSRAM enabled?",
+                 what, (unsigned)sizeof(clip_t));
+        abort();
+    }
+    return c;
+}
 
 // ---- event_id -> direction lookup -------------------------------------
 // Replaces a single `last_dir` global (the previous version's actual bug):
@@ -133,10 +158,11 @@ static void on_cmd(uint8_t event_id, uint8_t intensity, uint8_t sound_class,
 // ---- capture / vote / collect state machine ----------------------------
 typedef enum { EV_IDLE, EV_VOTING, EV_COLLECTING, EV_COOLDOWN } ev_state_t;
 
+#if !MEIT_FAKE_EVENTS   // not built in fake mode (would be an unused static)
 static void capture_task(void *arg)
 {
     static audio_frame_t f;
-    static clip_t clip;
+    clip_t *clip = cap_clip;   // PSRAM, allocated in app_main()
     static float dir_votes[8];
     static int dir_counts[8];
     static ev_state_t state = EV_IDLE;
@@ -182,7 +208,7 @@ static void capture_task(void *arg)
             memset(dir_votes, 0, sizeof(dir_votes));
             memset(dir_counts, 0, sizeof(dir_counts));
             votes_left = TDOA_VOTE_FRAMES;
-            clip.n = 0;
+            clip->n = 0;
             resample_reset();   // don't let the previous event's FIR tail
                                 // (possibly a different mic channel) leak in
             state = EV_VOTING;
@@ -194,7 +220,7 @@ static void capture_task(void *arg)
             // heavy first instant of an onset, or a partial cycle of a
             // warbling siren). Vote over the first ~125ms instead of
             // trusting frame 1 alone -- cheap given the AI needs the full
-            // ~0.5s clip regardless, so this adds little to end-to-end
+            // 2.56 s clip regardless, so this adds little to end-to-end
             // latency. Confidence-weighted so a few strong reads outvote
             // several weak/ambiguous ones. TDOA_MIN_VALID_VOTES requires
             // the WINNING bin specifically to have that many frames behind
@@ -220,7 +246,7 @@ static void capture_task(void *arg)
                 dir_counts[d.index & 7]++;
             }
             votes_left--;
-            clip.n += resample_48k_to_16k(f.ch[chosen_ch], FRAME_LEN, clip.pcm + clip.n);
+            clip->n += resample_48k_to_16k(f.ch[chosen_ch], FRAME_LEN, clip->pcm + clip->n);
 
             if (votes_left <= 0) {
                 int best = -1; float best_w = 0.0f;
@@ -245,10 +271,10 @@ static void capture_task(void *arg)
         }
 
         // EV_COLLECTING
-        clip.n += resample_48k_to_16k(f.ch[chosen_ch], FRAME_LEN, clip.pcm + clip.n);
-        if (clip.n >= CLIP_OUT_SAMPLES) {
-            clip.event_id = cur_event_id;
-            if (xQueueSend(q, &clip, 0) != pdTRUE)
+        clip->n += resample_48k_to_16k(f.ch[chosen_ch], FRAME_LEN, clip->pcm + clip->n);
+        if (clip->n >= CLIP_OUT_SAMPLES) {
+            clip->event_id = cur_event_id;
+            if (xQueueSend(q, clip, 0) != pdTRUE)
                 ESP_LOGW(TAG, "BLE queue full, dropping clip for event %u "
                              "(BLE task can't keep up)", cur_event_id);
             cooldown_left = COOLDOWN_FRAMES;
@@ -257,13 +283,51 @@ static void capture_task(void *arg)
     }
 }
 
+#endif  // !MEIT_FAKE_EVENTS
+
+#if MEIT_FAKE_EVENTS
+// ---- bring-up only: synthetic events, no microphones needed -------------
+// Exercises everything AFTER the microphones exactly as production does:
+// record_event_direction() -> DIR notify -> the same clip queue/ble_task ->
+// chunked AUDIO -> laptop -> CMD -> on_cmd() -> motor. Direction cycles
+// 0..7 so each CMD should buzz the next motor in turn. The clip is a fixed
+// 1 kHz tone at about -20 dBFS (loud enough to pass meit-ai's DB_GATE).
+// Measured 2026-09-23 with the current meit-ai model: this tone is
+// classified "siren" (~0.56 > THRESHOLD 0.4), so the REAL AI path also
+// sends a CMD -- but that is a model quirk, not a guarantee. For a
+// deterministic motor-path test use `ble_receiver.py --mock-ai`.
+// capture_task is not started in this mode (see app_main).
+static void fake_event_task(void *arg)
+{
+    clip_t *clip = cap_clip;   // capture_task does not run in this mode
+    for (int i = 0; i < CLIP_OUT_SAMPLES; i++)
+        clip->pcm[i] = (int16_t)(3277.0f * sinf(2.0f * (float)M_PI * 1000.0f * i / AI_FS_HZ));
+    clip->n = CLIP_OUT_SAMPLES;
+
+    uint8_t event_id = 0, dir = 0;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(MEIT_FAKE_EVENT_PERIOD_MS));
+        if (!ble_svc_connected()) continue;
+        record_event_direction(event_id, dir);
+        ble_svc_send_direction(event_id, dir, 1.0f, -20.0f);
+        clip->event_id = event_id;
+        if (xQueueSend(q, clip, 0) != pdTRUE)
+            ESP_LOGW(TAG, "FAKE: BLE queue full, dropped event %u", event_id);
+        else
+            ESP_LOGI(TAG, "FAKE event %u dir=%u queued", event_id, dir);
+        event_id++;
+        dir = (uint8_t)((dir + 1) & 7);
+    }
+}
+#endif
+
 static void ble_task(void *arg)
 {
-    static clip_t clip;
+    clip_t *clip = ble_clip;   // PSRAM, allocated in app_main()
     while (1) {
-        if (xQueueReceive(q, &clip, portMAX_DELAY) != pdTRUE) continue;
+        if (xQueueReceive(q, clip, portMAX_DELAY) != pdTRUE) continue;
         if (!ble_svc_connected()) continue;
-        ble_svc_send_audio(clip.event_id, clip.pcm, clip.n);
+        ble_svc_send_audio(clip->event_id, clip->pcm, clip->n);
     }
 }
 
@@ -281,7 +345,15 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_rc);
 
-    q = xQueueCreate(2, sizeof(clip_t));
+    // Queue storage (2 x ~82 KB) in PSRAM too -- see alloc_clip_psram().
+    q = xQueueCreateWithCaps(2, sizeof(clip_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!q) {
+        ESP_LOGE(TAG, "clip queue alloc (2 x %u bytes, PSRAM) failed",
+                 (unsigned)sizeof(clip_t));
+        abort();
+    }
+    cap_clip = alloc_clip_psram("capture clip");
+    ble_clip = alloc_clip_psram("BLE clip");
     motor_init();
     resample_init();
     tdoa_init();
@@ -295,7 +367,13 @@ void app_main(void)
     ble_svc_init();
     ble_svc_set_cmd_cb(on_cmd);
 
+#if MEIT_FAKE_EVENTS
+    ESP_LOGW(TAG, "MEIT_FAKE_EVENTS=1: synthetic events every %d ms, "
+                  "microphone capture task NOT started", MEIT_FAKE_EVENT_PERIOD_MS);
+    xTaskCreatePinnedToCore(fake_event_task, "fake", 4096, NULL, 6, NULL, 1);
+#else
     xTaskCreatePinnedToCore(capture_task, "cap", 8192, NULL, 6, NULL, 1);
+#endif
     xTaskCreatePinnedToCore(ble_task,     "ble", 4096, NULL, 4, NULL, 0);
     ESP_LOGI(TAG, "running");
 }

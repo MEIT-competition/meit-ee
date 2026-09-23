@@ -21,6 +21,7 @@
 #include "main_under_test.c"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ---- stand-ins for everything else main.c calls (referenced only from
@@ -28,6 +29,10 @@
 // their bodies just need to exist so the whole file links) ----
 QueueHandle_t xQueueCreate(int n, size_t item_size)
 { (void)n; (void)item_size; return (void *)1; }
+QueueHandle_t xQueueCreateWithCaps(int n, size_t item_size, uint32_t caps)
+{ (void)n; (void)item_size; (void)caps; return (void *)1; }
+void *heap_caps_calloc(size_t n, size_t size, uint32_t caps)
+{ (void)caps; return calloc(n, size); }
 int xQueueSend(QueueHandle_t q, const void *item, TickType_t wait)
 { (void)q; (void)item; (void)wait; return pdTRUE; }
 int xQueueReceive(QueueHandle_t q, void *item, TickType_t wait)

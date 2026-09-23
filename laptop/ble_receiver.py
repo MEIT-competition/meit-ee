@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 from bleak import BleakClient, BleakScanner
 
-from laptop.ai_bridge import run_live_ai, run_mock_ai
+from laptop.ai_bridge import run_live_ai, run_mock_ai, warmup_live_ai
 from laptop.protocol import (
     AUDIO_UUID, CMD_UUID, DEVICE_NAME, DIR_UUID,
     AudioAssembler, decode_audio_chunk, decode_dir_packet,
@@ -197,12 +197,37 @@ async def run(mock_ai: bool, scan_timeout: float):
             except asyncio.CancelledError:
                 pass
 
+async def run_forever(mock_ai: bool, scan_timeout: float, once: bool,
+                      retry_delay: float = 2.0):
+    # Firmware re-advertises after every disconnect (ble_svc.c), so a dropped
+    # link during a demo only needs the laptop to scan and connect again.
+    # A connection error is logged and retried rather than killing the script.
+    while True:
+        try:
+            await run(mock_ai, scan_timeout)
+        except Exception as exc:
+            print(f"[BLE] connection error: {exc}")
+        if once:
+            return
+        print(f"[BLE] disconnected / not found -> retrying in {retry_delay:.0f} s "
+              "(Ctrl+C to quit)")
+        await asyncio.sleep(retry_delay)
+
 def main():
     p = argparse.ArgumentParser(description="MEIT belt laptop BLE receiver")
     p.add_argument("--mock-ai", action="store_true")
     p.add_argument("--scan-timeout", type=float, default=8.0)
+    p.add_argument("--once", action="store_true",
+                   help="exit after the first disconnect instead of reconnecting")
     args = p.parse_args()
-    asyncio.run(run(args.mock_ai, args.scan_timeout))
+    if not args.mock_ai:
+        print("[AI] loading model (warm-up)...")
+        warmup_live_ai(AI_SAMPLE_RATE)
+        print("[AI] model ready")
+    try:
+        asyncio.run(run_forever(args.mock_ai, args.scan_timeout, args.once))
+    except KeyboardInterrupt:
+        print("\n[BLE] stopped")
 
 if __name__ == "__main__":
     main()

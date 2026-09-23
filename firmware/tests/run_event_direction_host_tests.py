@@ -67,6 +67,10 @@ static inline void meit_test_vlog(char *dst, size_t n, const char *fmt, ...)
 } while (0)
 
 QueueHandle_t xQueueCreate(int n, size_t item_size);
+#define MALLOC_CAP_8BIT   (1u << 2)
+#define MALLOC_CAP_SPIRAM (1u << 10)
+QueueHandle_t xQueueCreateWithCaps(int n, size_t item_size, uint32_t caps);
+void *heap_caps_calloc(size_t n, size_t size, uint32_t caps);
 int xQueueSend(QueueHandle_t q, const void *item, TickType_t wait);
 int xQueueReceive(QueueHandle_t q, void *item, TickType_t wait);
 BaseType_t xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
@@ -92,7 +96,8 @@ def main():
         d = pathlib.Path(tmp)
         (d / 'host_stub.h').write_text(STUB)
         for header in ['freertos/FreeRTOS.h', 'freertos/task.h',
-                       'freertos/queue.h', 'esp_log.h', 'esp_err.h',
+                       'freertos/queue.h', 'freertos/idf_additions.h',
+                       'esp_heap_caps.h', 'esp_log.h', 'esp_err.h',
                        'nvs_flash.h']:
             f = d / header
             f.parent.mkdir(parents=True, exist_ok=True)

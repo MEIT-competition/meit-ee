@@ -415,9 +415,10 @@ idf.py -p COM_PORT flash monitor
 
 - BLE receiver와 meit-ai live inference 사이의 연결 인터페이스
 - `run_mock_ai()`는 BLE 통합 테스트용 고정 결과
-- meit-ai 측 위험음 분류/진동 결정 로직은 구현되어 있으나, `meit-ee`의 실제 BLE live path와의 adapter 연결은 아직 필요
-- AI 내부 결과값은 일반 Python 값으로 유지하고, BLE 송신 직전에 기존 `CMD` binary packet으로 encode하는 방향을 기준으로 통합
-- 기존 `run_live_ai()` 자리에 meit-ai의 실제 inference/decision entry point를 연결하는 것이 다음 작업
+- `run_live_ai()`는 meit-ai의 `classifier.adapter.predict_array()` + `decision.judge.judge()`를 호출하는 실제 live adapter로 구현됨
+- 시작 시 `warmup_live_ai()`로 모델을 미리 로딩해 첫 실제 이벤트의 모델 로딩 지연을 줄임
+- AI 내부 결과값은 일반 Python 값으로 유지하고, BLE 송신 직전에 기존 `CMD` binary packet으로 encode
+- 남은 검증은 **실물 BLE 연결에서 AUDIO/DIR → AI → CMD end-to-end가 정상인지 확인하는 것**
 
 현재 laptop-side BLE protocol/unit/regression test는 실제 하드웨어 없이 **17개 모두 통과**했습니다.
 
@@ -443,7 +444,7 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 - 검증 정확도 공유값: 경적 96.6%, 사이렌 95.3%
 - 1회 추론 시간 공유값: 약 26.8 ms
 - AI팀 공유 기준 게이팅 주기: 250 ms
-- 현재 `firmware/main/config.h`의 `GATING_MS`는 300 ms이므로 **통합 전 반드시 한 값으로 맞춰야 함**
+- `meit-ee`와 `meit-ai`의 `GATING_MS`는 현재 **250 ms로 일치**함. 두 repo가 별도 상수를 사용하므로 이후 한쪽 값을 바꾸면 다시 cross-check 필요
 - AI팀은 위험음 종류 판단 후 진동 세기·패턴까지 결정하는 로직을 보유
 - `meit-ee` 쪽에서는 MCU가 TDoA 방향을 계산하고 AUDIO/DIR을 노트북으로 전송
 - 노트북은 AI 판단 결과를 기존 `CMD` binary packet으로 encode해 MCU로 전송
@@ -451,7 +452,7 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 
 회의에서 문자열 형태의 `3,1,95` 예시가 제안되었지만, 현재 `meit-ee`에는 이미 binary `CMD` protocol과 MCU parser, host/unit/regression test가 구현되어 있으므로 실제 통합 기준은 기존 binary protocol을 유지하는 쪽으로 정리합니다. AI 코드 내부에서는 direction/class/intensity/pattern을 일반 값으로 다루고, BLE 송신 직전에 `laptop/protocol.py`의 CMD encoder를 사용하는 방식입니다.
 
-현재 핵심 미완료 항목은 **AI repo의 실제 inference entry point를 `laptop/ai_bridge.py` / `ble_receiver.py` live path에 연결하는 adapter 작업**입니다. repo 전체를 합치거나 firmware protocol을 다시 설계할 필요는 없습니다.
+현재 핵심 미완료 항목은 **실물 BLE에서 `AUDIO/DIR → run_live_ai() → CMD → ESP32` end-to-end를 검증하는 작업**입니다. live adapter 자체는 구현되어 있으므로 repo 전체를 합치거나 firmware protocol을 다시 설계할 필요는 없습니다.
 
 ## 주요 설정값
 
@@ -465,13 +466,13 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 | `config.h` | `MIC_RADIUS_M = 0.08` | 임시 마이크 반경, 실제 벨트 실측 필요 |
 | `config.h` | `MIN_CONFIDENCE = 0.15` | 임시 TDoA confidence threshold |
 | `config.h` | `RMS_GATE_DBFS = -60` | BLE 트래픽 감소용 MCU pre-gate |
-| `config.h` | `CLIP_FRAMES = 24` | 이벤트당 약 0.5초 오디오 |
+| `config.h` | `CLIP_FRAMES = 120` | 이벤트당 2.56초 오디오(16 kHz 변환 후 40960 samples, AI는 앞 2.5초 사용) |
 | `config.h` | `TDOA_VOTE_FRAMES = 6` | 방향 voting 프레임 수 |
 | `config.h` | `MOTOR_PWM_FREQ_HZ = 20000` | ERM PWM 초기값. 실물에서 진동/소음/저 duty 기동성 비교 필요 |
 | `config.h` | `MOTOR_SLEEP_GPIO = -1` | Adafruit DRV8833 SLP를 3V3에 strap, 펌웨어 미제어 |
-| `config.h` | `MOTOR_SUPPLY_MV = 4200` | raw LiPo 기준 worst-case motor rail 가정. 실제 VM 경로 확인 후 판단 |
+| `config.h` | `MOTOR_SUPPLY_MV = 4200` | **현재 4×AA bring-up에는 미확정 임시값**. 셀 종류/최대 pack voltage 확인 후 motor test 전에 수정 필요 |
 | `config.h` | `MOTOR_RATED_MV = 3000` | coin ERM 정격 3 V |
-| `config.h` | `MOTOR_DUTY_CAP` | 기본 182/255 ≈ 71%. raw LiPo motor rail 후보 기준, 실물 검증 필요 |
+| `config.h` | `MOTOR_DUTY_CAP` | 현재 4200 mV 임시값으로 계산됨. **4×AA 실제 전압 확인 전에는 최종 cap으로 사용하지 않음** |
 | `config.h` | `UNKNOWN_SWEEP_ON_MS = 80` | `DIR_UNKNOWN` cardinal motor 1개당 ON 시간 |
 | `config.h` | `UNKNOWN_SWEEP_OFF_MS = 40` | cardinal motor 사이 OFF gap |
 
@@ -532,7 +533,7 @@ AI팀 최신 진행 기준으로 위험음 분류 모델과 진동 결정 로직
 
 ## 다음 작업 순서
 
-1. **AA pack 사양 확인 + motor firmware 전원값 수정** — cell type / nominal pack voltage를 확인한 뒤 `MOTOR_SUPPLY_MV`, duty cap을 맞춥니다.
+1. **AA pack 사양 확인 + motor firmware 전원값 수정** — cell type / fresh-cell 기준 최대 pack voltage를 확인한 뒤 `MOTOR_SUPPLY_MV`, duty cap을 맞춥니다.
 2. **Motor self-test** — 한 번에 motor 1개씩 0→7 순서로 구동해 위치 mapping, 최소 기동 duty, driver/battery 이상 여부를 확인합니다.
 3. **Microphone hardware 재검증** — 멀티미터/logic analyzer 확보 후 VDD, BCLK, WS, SD를 실제 mic 단자 기준으로 확인합니다.
 4. **실제 TDoA calibration** — mic signal 확보 후 dual-I2S sample skew와 8방향 정확도를 측정합니다.
