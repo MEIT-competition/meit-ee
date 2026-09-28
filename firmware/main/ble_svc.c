@@ -227,7 +227,7 @@ static int notify(uint16_t val_handle, const uint8_t *data, uint16_t len)
     return ble_gatts_notify_custom(conn_handle, val_handle, om);
 }
 
-// A 0.5s @16kHz PCM16 clip is ~16KB -- far larger than any single ATT
+// A 2.56 s @16kHz PCM16 clip is ~80 KB (40960 samples) -- far larger than any single ATT
 // notification (MTU-3 bytes, a few hundred at best even fully negotiated).
 // The old code tried to notify() the whole clip in one call, which the BLE
 // stack cannot do; it would fail or silently truncate. This chunks it with

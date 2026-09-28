@@ -39,6 +39,21 @@ def run_live_ai(audio, sample_rate: int, direction_info) -> Optional[AIResult]:
     )
 
 
+def warmup_live_ai(sample_rate: int = 16000) -> None:
+    """Load the model and run one throwaway inference up front.
+
+    meit-ai loads its SavedModel lazily on the first predict_array() call,
+    which takes seconds -- without this, that load lands on the FIRST real
+    event and delays its CMD. Input is 2.5 s of silence (meit-ai CLIP_SEC);
+    the result is discarded.
+    """
+    import numpy as np
+    from classifier.adapter import CLIP_SEC, SR, predict_array
+    if sample_rate != SR:
+        raise ValueError(f"sample_rate must be {SR}, got {sample_rate}")
+    predict_array(np.zeros(int(SR * CLIP_SEC), dtype=np.float32))
+
+
 def run_mock_ai(audio, sample_rate: int, direction_info) -> AIResult:
     # Integration-test only. This is NOT a sound classifier.
     return AIResult(
@@ -46,16 +61,3 @@ def run_mock_ai(audio, sample_rate: int, direction_info) -> AIResult:
         sound_class="siren",
         pattern=[[100, 50], [100, 0]],
     )
-
-def warmup() -> None:
-    """모델을 미리 로드해둔다.
-
-    predict_array()의 첫 호출에서 TensorFlow SavedModel을 디스크에서
-    읽어오느라 30초 안팎이 걸린다(실측 28~37초). BLE 연결 직후 미리
-    한 번 돌려두면 실제 이벤트는 처음부터 30ms 안에 처리된다.
-    """
-    import numpy as np
-
-    from classifier.adapter import CLIP_SEC, SR
-
-    run_live_ai(np.zeros(int(SR * CLIP_SEC), dtype=np.float32), SR, None)

@@ -14,7 +14,9 @@ static float h[NT], hist[NT];
 // (341) -- an overflow of 24 samples over a 24-frame clip. Verified in
 // Python: floor(1024/3) sampled per-frame-reset over 24 frames gives 8208
 // outputs against an 8184-sample buffer. A persistent phase instead gives
-// exactly floor(24*1024/3) = 8192, matching CLIP_OUT_SAMPLES in config.h.
+// exactly floor(N*1024/3) for N frames (40960 at the current CLIP_FRAMES=120),
+// matching CLIP_OUT_SAMPLES in config.h. (The 24-frame figures above are the
+// original worked example from when the clip was 24 frames / 0.5 s.)
 static int phase = 0;
 
 void resample_init(void)

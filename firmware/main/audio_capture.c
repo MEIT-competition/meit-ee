@@ -1,11 +1,12 @@
-// 4x INMP441 on two I2S peripherals sharing ONE electrical BCLK/WS net.
+// 4x INMP441 on two I2S peripherals sharing one BCLK/WS timing source.
 //
-//   bus A = MASTER : drives BCLK + WS, reads FRONT(L) / RIGHT(R)
-//   bus B = SLAVE  : consumes the SAME BCLK + WS, reads BACK(L) / LEFT(R)
+//   bus A = I2S0 MASTER : drives GPIO5 BCLK + GPIO6 WS, reads FRONT/RIGHT
+//   bus B = I2S1 SLAVE  : receives the same GPIO5/6 clocks through the
+//                        ESP32-S3 GPIO matrix, reads BACK/LEFT
 //
-// "Same net" is electrical, not the same GPIO number -- bus A's BCLK/WS
-// outputs and bus B's BCLK/WS inputs use DIFFERENT ESP32 GPIOs, jumpered
-// together on the board. See config.h for which pins and why.
+// GPIO16/17 remain part of the physical prototype wiring, but I2S1 no longer
+// depends on those pins for its receive clocks. This software loopback was
+// added after the external slave-clock path timed out during bring-up.
 //
 // Because both peripherals latch on the same clock edges, there is no sample
 // CLOCK drift between them. What is NOT guaranteed is which WS frame each DMA
@@ -20,6 +21,8 @@
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
+#include "soc/gpio_sig_map.h"
 #include "audio_capture.h"
 
 static const char *TAG = "audio";
@@ -47,12 +50,37 @@ static esp_err_t make_bus(i2s_port_t port, i2s_role_t role,
     return i2s_channel_init_std_mode(*out, &sc);
 }
 
+// Route the I2S0 master clock pads back into the I2S1 slave inputs.
+// GPIO5/6 must stay usable as outputs for the microphones while also being
+// sampled as inputs by the GPIO matrix. gpio_set_direction() can replace the
+// peripheral output routing, so the I2S0 output signals are restored after it.
+static void connect_i2s0_clocks_to_i2s1(void)
+{
+    esp_rom_gpio_pad_select_gpio(I2S_A_BCLK);
+    esp_rom_gpio_pad_select_gpio(I2S_A_WS);
+
+    ESP_ERROR_CHECK(gpio_set_direction(I2S_A_BCLK, GPIO_MODE_INPUT_OUTPUT));
+    ESP_ERROR_CHECK(gpio_set_direction(I2S_A_WS, GPIO_MODE_INPUT_OUTPUT));
+
+    esp_rom_gpio_connect_out_signal(I2S_A_BCLK, I2S0I_BCK_OUT_IDX, false, false);
+    esp_rom_gpio_connect_out_signal(I2S_A_WS, I2S0I_WS_OUT_IDX, false, false);
+
+    esp_rom_gpio_connect_in_signal(I2S_A_BCLK, I2S1I_BCK_IN_IDX, false);
+    esp_rom_gpio_connect_in_signal(I2S_A_WS, I2S1I_WS_IN_IDX, false);
+
+    ESP_LOGI(TAG, "internal clock loopback: GPIO%d BCLK + GPIO%d WS -> I2S1",
+             I2S_A_BCLK, I2S_A_WS);
+}
+
 esp_err_t audio_capture_init(void)
 {
     ESP_ERROR_CHECK(make_bus(I2S_NUM_0, I2S_ROLE_MASTER,
                              I2S_A_BCLK, I2S_A_WS, I2S_A_DIN, &rx_a));
     ESP_ERROR_CHECK(make_bus(I2S_NUM_1, I2S_ROLE_SLAVE,
-                             I2S_B_BCLK, I2S_B_WS, I2S_B_DIN, &rx_b));
+                             I2S_GPIO_UNUSED, I2S_GPIO_UNUSED,
+                             I2S_B_DIN, &rx_b));
+
+    connect_i2s0_clocks_to_i2s1();
 
     // Enable the SLAVE first so it is already armed when clocks start.
     ESP_ERROR_CHECK(i2s_channel_enable(rx_b));

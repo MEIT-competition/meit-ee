@@ -29,7 +29,8 @@ nothing is sent to the belt in that case.
 16 kHz mono PCM16, little-endian, sent only when the loudness gate is
 exceeded (loudest of the 4 mics, not just FRONT -- see `main.c`'s
 `capture_task`).
-**Chunked** -- a ~0.5s/8192-sample clip (~16 KB) is far larger than one ATT
+**Chunked** -- a 2.56 s/40960-sample clip (~80 KB, 342 chunks at the 240-byte
+payload cap) is far larger than one ATT
 notification, so each notify is:
 
 | byte | meaning |
@@ -39,8 +40,9 @@ notification, so each notify is:
 | 2 | flags, bit0 = last chunk of this event |
 | 3.. | PCM16 samples, little-endian |
 
-Clip length is whatever the event lasted (currently ~0.5 s via
-`CLIP_FRAMES`), not a fixed 4.5 s. **This was checked against the actual
+Clip length is fixed at 2.56 s (40960 samples, `CLIP_FRAMES`=120 in
+`config.h`); meit-ai `classifier/adapter.py` keeps the first 2.5 s
+(`CLIP_SEC`). (Historical: this was ~0.5 s in earlier firmware.) **This was checked against the actual
 deployed model, not assumed**: `model/saved_model/danger_sound_classifier`'s
 signature takes `audio: shape=(None,)` (variable length), and feeding it a
 short clip with or without zero-padding to 4.5 s gave the same result in a
@@ -50,13 +52,13 @@ recordings later show a real difference, revisit this -- the synthetic test
 is not a substitute for testing on the actual target sounds.
 
 meit-ai's `classifier/adapter.py::predict()` takes a **file path**
-(`librosa.load`), not an array -- it can't be called directly on a live BLE
-buffer. `model/inference.py::classify_clip()` takes a raw array and is the
-one to wire up for real-time use, but as of this snapshot its decision logic
-(fixed intensity 60/100, no direction, no pattern) does not match
-`decision/judge.py` (the one this file's CMD format is built against).
-**Needs a decision from the AI side**: which logic is authoritative for the
-live pipeline.
+(`librosa.load`) and is not used for live BLE buffers. The live path is
+`laptop/ai_bridge.py::run_live_ai()`, which calls
+`classifier.adapter.predict_array()` and then `decision.judge.judge()`.
+That `judge()` result is authoritative for the live CMD path.
+`model/inference.py::classify_clip()` still exists for benchmark/eval use and
+has its own legacy intensity rule, but it is explicitly **not** used by the
+live BLE pipeline.
 
 ## DIR (notify, MCU -> laptop)
 
@@ -144,30 +146,24 @@ side's number changes.
 
 ## Known open items
 
-**As of the latest cross-check, these two are now the critical path --
-firmware is at the point of waiting on hardware, but these are blocking
-regardless of hardware:**
+The current code-level EE↔AI contract is aligned for the MVP, but the following
+items still require hardware validation or manual cross-checks:
 
-- [ ] AI side: resolve `classify_clip()` vs `judge()` decision-logic mismatch
-     before wiring up the real-time receiver.
-- [ ] AI side: **`decision/intensity.py`'s `LOW_CONF_RATIO`
-     (confidence<0.7 -> intensity x0.6) still hasn't been removed**,
-     confirmed still present as of the latest check -- this has now been
-     flagged twice. It still doesn't match the team's agreement that
-     confidence gates whether to alert at all and dBFS alone drives
-     intensity. This needs an answer from the AI side, not another repeat
-     of the same flag.
-- [ ] AI side: `laptop/ble_receiver.py` now implements the BLE receive/reassembly/
-     CMD-write path, but `laptop/ai_bridge.py::run_live_ai()` is still a stub.
-     Resolve `classify_clip()` vs `judge()` and wire the authoritative live
-     inference path before calling the system end-to-end complete.
-- [ ] Both sides: `GATING_MS` in `config.h` currently drives the MCU cooldown
-     (`COOLDOWN_FRAMES`), but there is still no shared constant with meit-ai.
-     If the AI-side gating value changes, re-check that the MCU cooldown policy
-     is still intentional.
+- [x] Live AI path: `laptop/ai_bridge.py::run_live_ai()` uses meit-ai
+      `classifier.adapter.predict_array()` + `decision.judge.judge()`.
+      `classify_clip()` is not on the live path.
+- [x] AI intensity policy: the live `decision/intensity.py` no longer applies
+      the old `LOW_CONF_RATIO`; confidence gates alert/no-alert in `judge()`,
+      while dBFS drives intensity.
+- [ ] Both sides: `GATING_MS` is currently 250 ms on both repos, but the value
+      is still duplicated rather than shared. If either side changes it,
+      re-run the contract check and review MCU cooldown/pattern timing.
 - [ ] Electronics side: **AUDIO chunk count depends on negotiated ATT MTU.**
-     If MTU negotiation fails and stays at the BLE default (23 bytes), one
-     ~8192-sample clip needs on the order of 1000 chunks, which is likely
-     too slow for a live alert. Confirm on real hardware that
-     `ble_att_set_preferred_mtu(247)` in `ble_svc_init()` actually results
-     in a larger negotiated MTU (`ble_att_mtu()`), not just that it compiles.
+      If MTU negotiation stays near the BLE default, a 40960-sample clip will
+      require many more chunks and may be too slow for a live alert. Confirm on
+      real hardware that `ble_att_set_preferred_mtu(247)` actually results in
+      a larger negotiated MTU (`ble_att_mtu()`).
+- [ ] Hardware end-to-end: validate real `DIR + AUDIO -> AI -> CMD -> motor`
+      with the ESP32-S3 and laptop connected. The code path is implemented,
+      but real BLE throughput, reconnect behavior, chunk loss, and latency are
+      still unverified.

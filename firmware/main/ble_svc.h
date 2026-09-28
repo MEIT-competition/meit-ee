@@ -5,7 +5,7 @@
 // NimBLE. Three characteristics. See firmware/PROTOCOL.md for the full
 // byte-level spec matched against meit-ai's actual output dict.
 //
-//   AUDIO notify : 16 kHz mono PCM16, chunked (a single 0.5s clip is far
+//   AUDIO notify : 16 kHz mono PCM16, chunked (a single 2.56 s clip is far
 //                  larger than one ATT packet -- see ble_svc.c). Each
 //                  notify is:
 //                    byte0  event_id
@@ -20,7 +20,7 @@
 //                  IMPORTANT: chunk count depends entirely on the
 //                  negotiated ATT MTU. If MTU negotiation fails and the
 //                  connection stays at the BLE default (23 bytes), one
-//                  0.5s/8192-sample clip needs on the order of 1000
+//                  2.56 s/40960-sample clip needs on the order of 4000+
 //                  chunks -- likely too slow for a live safety alert.
 //                  Confirm MTU actually negotiates above default on real
 //                  hardware before treating end-to-end latency as solved.

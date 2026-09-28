@@ -13,7 +13,12 @@
 #define I2S_A_BCLK        GPIO_NUM_5
 #define I2S_A_WS          GPIO_NUM_6
 #define I2S_A_DIN         GPIO_NUM_7     // mic FRONT (L/R=GND) + RIGHT (L/R=VDD)
-// --- I2S bus B (slave, BCLK/WS wired to bus A's net via a jumper) ---
+// --- I2S bus B (slave) ---
+// CURRENT FIRMWARE: I2S1 takes BCLK/WS INTERNALLY from the GPIO5/6 pads via
+// the GPIO matrix (audio_capture.c connect_i2s0_clocks_to_i2s1()). The
+// I2S_B_BCLK/I2S_B_WS values below are NOT configured by any code any more;
+// the physical GPIO5<->16 / GPIO6<->17 jumpers are left in place but unused.
+// The historical note below explains why the pins were kept distinct.
 #define I2S_B_BCLK        GPIO_NUM_16
 #define I2S_B_WS          GPIO_NUM_17
 #define I2S_B_DIN         GPIO_NUM_15    // mic BACK (L/R=GND) + LEFT (L/R=VDD)
@@ -119,6 +124,12 @@ enum { CH_FRONT = 0, CH_RIGHT = 1, CH_BACK = 2, CH_LEFT = 3 };
 // supply rail, not a momentary meter reading. If VM is raw LiPo, keep 4200.
 // Only change it when a dedicated regulated motor rail is confirmed. Do not
 // power all motors from the ESP32 board's 3V3 rail.
+// !! STALE FOR CURRENT BRING-UP HARDWARE: motors now run from a 4xAA pack,
+// !! not a 1S LiPo. 4200 is NOT the worst case for 4xAA, so the cap below
+// !! would over-drive 3 V motors. Before any motor test, read the cell
+// !! chemistry off the label and set this to 4 x that chemistry's fresh-cell
+// !! maximum (from the cell datasheet). Deliberately NOT changed here because
+// !! the chemistry/voltage is not yet known.
 #define MOTOR_SUPPLY_MV   4200
 #define MOTOR_RATED_MV    3000
 #define MOTOR_DUTY_MAX    255
@@ -161,12 +172,12 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
       SOUND_CLASS_NONE = 0xFF };
 
 // --- Per-event audio clip ---
-#define CLIP_FRAMES 120   // ~0.5 s of audio per event
+#define CLIP_FRAMES 120   // 120 x 1024 / 48 kHz = 2.56 s per event (meit-ai uses the first 2.5 s)
 // Computed as (FRAME_LEN * CLIP_FRAMES) / DECIM, NOT (FRAME_LEN/DECIM) *
 // CLIP_FRAMES -- the latter truncates 1024/3 to 341 before multiplying,
 // undercounting by 24 samples over 24 frames vs. what resample_48k_to_16k
 // actually produces once its decimation phase is correctly persistent
-// (342 samples on most frames, 341 on others, 8192 total). Verified this
+// (342 samples on most frames, 341 on others; 40960 total at 120 frames). Verified this
 // divides evenly for the current FRAME_LEN/CLIP_FRAMES/DECIM; if you change
 // any of the three, check FRAME_LEN*CLIP_FRAMES % DECIM == 0 still holds.
 #define CLIP_OUT_SAMPLES  ((FRAME_LEN * CLIP_FRAMES) / DECIM)
@@ -174,7 +185,7 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
 // First N frames (~N*21ms) of a new event are used to vote on direction
 // instead of trusting a single 21ms frame. A car horn's first frame can be
 // ambiguous or reflection-heavy; averaging over ~125ms costs little given
-// the AI needs the full ~0.5s clip anyway. See main.c.
+// the AI needs the full 2.56 s clip anyway. See main.c.
 #define TDOA_VOTE_FRAMES  6
 
 // A single confident-looking frame must not win the vote outright just
@@ -195,7 +206,7 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
 // Without this, a sustained loud sound (a real siren, for instance) would
 // re-trigger a brand new event on literally the next 21ms frame, back to
 // back, indefinitely -- flooding the BLE queue and giving the AI a stream
-// of redundant clips instead of one. GATING_MS (300, meit-ai's own pattern-
+// of redundant clips instead of one. GATING_MS (250, meit-ai's own pattern-
 // length budget) doubles as this cooldown so the belt doesn't re-arm faster
 // than meit-ai would want to re-decide anyway.
 #define COOLDOWN_FRAMES   ((GATING_MS * TDOA_FS_HZ) / (FRAME_LEN * 1000))
@@ -204,3 +215,11 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
 // actual negotiated ATT MTU (which can vary 20-512 bytes) -- bounds a
 // fixed-size stack buffer in ble_svc.c regardless of what gets negotiated.
 #define BLE_AUDIO_MAX_PAYLOAD 240
+
+// ---- Bring-up only: synthetic events (no microphones needed) ----
+// 1 = replace the microphone capture task with fake_event_task (main.c): one
+// event every MEIT_FAKE_EVENT_PERIOD_MS while BLE is connected, direction
+// cycling 0..7, fixed 1 kHz tone clip. Lets BLE -> laptop -> CMD -> motor be
+// tested while the microphone hardware is still dead. MUST be 0 for demo.
+#define MEIT_FAKE_EVENTS          0
+#define MEIT_FAKE_EVENT_PERIOD_MS 10000
