@@ -46,3 +46,16 @@ def run_mock_ai(audio, sample_rate: int, direction_info) -> AIResult:
         sound_class="siren",
         pattern=[[100, 50], [100, 0]],
     )
+
+def warmup() -> None:
+    """모델을 미리 로드해둔다.
+
+    predict_array()의 첫 호출에서 TensorFlow SavedModel을 디스크에서
+    읽어오느라 30초 안팎이 걸린다(실측 28~37초). BLE 연결 직후 미리
+    한 번 돌려두면 실제 이벤트는 처음부터 30ms 안에 처리된다.
+    """
+    import numpy as np
+
+    from classifier.adapter import CLIP_SEC, SR
+
+    run_live_ai(np.zeros(int(SR * CLIP_SEC), dtype=np.float32), SR, None)

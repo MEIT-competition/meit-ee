@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 from bleak import BleakClient, BleakScanner
 
-from laptop.ai_bridge import run_live_ai, run_mock_ai
+from laptop.ai_bridge import run_live_ai, run_mock_ai, warmup
 from laptop.protocol import (
     AUDIO_UUID, CMD_UUID, DEVICE_NAME, DIR_UUID,
     AudioAssembler, decode_audio_chunk, decode_dir_packet,
@@ -178,8 +178,13 @@ async def run(mock_ai: bool, scan_timeout: float):
                 print("  ", uuid)
             print("Verify UUID byte order against firmware/main/ble_svc.c.")
             return
+        
+        if not mock_ai:
+            print("[AI] 모델 로딩 중... (30초 안팎)")
+            await asyncio.to_thread(warmup)
+            print("[AI] 준비 완료")
 
-        receiver = Receiver(mock_ai=mock_ai)
+        receiver = Receiver(mock_ai=mock_ai)     
         receiver.client = client
 
         await client.start_notify(DIR_UUID, receiver.on_dir)
