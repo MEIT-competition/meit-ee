@@ -1,0 +1,26 @@
+menu "MEIT motor self-test"
+
+config MEIT_MOTOR_TEST_INTENSITY_PCT
+    int "Motor test intensity (%)"
+    range 1 100
+    default 15
+    help
+        Percent of MOTOR_DUTY_CAP (config.h), not of full duty. 100 means
+        "average voltage = MOTOR_RATED_MV", which is only true once
+        MOTOR_SUPPLY_MV matches the real motor rail. At the default 15 an
+        ERM motor will very likely NOT start (a false "motor dead" result).
+        Before increasing this value, first confirm the battery pack voltage
+        and motor rating, then set MOTOR_SUPPLY_MV accordingly. Keep the first
+        hardware check conservative and test one motor at a time.
+
+config MEIT_MOTOR_TEST_ON_MS
+    int "Time each motor stays on (ms)"
+    range 100 5000
+    default 700
+
+config MEIT_MOTOR_TEST_GAP_MS
+    int "Off time between motors (ms)"
+    range 100 5000
+    default 500
+
+endmenu

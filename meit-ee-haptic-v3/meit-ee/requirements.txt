@@ -1,0 +1,4 @@
+# Laptop-side runtime for the belt itself.
+# bleak is the only hard dependency: everything else in laptop/ is stdlib, which
+# is what lets the unit tests and haptic_preview run on a bare Python install.
+bleak>=3.0,<4

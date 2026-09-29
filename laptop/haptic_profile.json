@@ -1,0 +1,27 @@
+{
+  "confidence_floor": 0.5,
+  "confidence_ceiling": 0.9,
+  "classes": {
+    "crash": {
+      "pulses": 1,
+      "on_ms": 500,
+      "gap_ms": 0,
+      "min_intensity": 88,
+      "max_intensity": 100
+    },
+    "horn": {
+      "pulses": 2,
+      "on_ms": 240,
+      "gap_ms": 140,
+      "min_intensity": 80,
+      "max_intensity": 100
+    },
+    "siren": {
+      "pulses": 3,
+      "on_ms": 260,
+      "gap_ms": 150,
+      "min_intensity": 84,
+      "max_intensity": 100
+    }
+  }
+}

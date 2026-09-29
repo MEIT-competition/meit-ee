@@ -1,0 +1,152 @@
+# MEIT EE BLE protocol — CMD v2 and CMD v3
+
+```text
+iPhone x4 -> meit-ios laptop bridge + meit-ai
+          -> laptop/haptic.py        (decides the pattern)
+          -> laptop/belt_client.py   (BLE CMD v2 or v3)
+          -> ESP32-S3 "MEIT-BELT"
+          -> LEFT / RIGHT vibration motors
+```
+
+The ESP32 captures no audio and estimates no direction. It receives a finished
+haptic command, validates it, and plays it.
+
+## BLE identity
+
+Unchanged from the previous firmware, so the laptop needs no device-specific
+discovery logic:
+
+- Device name: `MEIT-BELT`
+- Service UUID: `01000000-1d9e-218f-9a4b-9c4e302a9d11`
+- CMD characteristic UUID: `04000000-1d9e-218f-9a4b-9c4e302a9d11`
+- Access: write (Write Request, i.e. acknowledged)
+
+## Why there are two versions
+
+CMD v2 carries **one motor mask for the whole pattern**, derived from its
+direction byte. With two actuators that expresses LEFT / BOTH / RIGHT only, so
+`front` and `back` had to collapse into the same sensation.
+
+CMD v3 carries **a motor mask per pattern step**, which lets `back` be rendered as
+a left-to-right sweep and keeps all four iOS directions distinguishable. See
+[`../docs/HAPTIC_DESIGN.md`](../docs/HAPTIC_DESIGN.md).
+
+The firmware accepts **both**, so a laptop running `--protocol 2` still drives a
+current belt, and the laptop can still drive a belt that has not been reflashed.
+
+## CMD v3 packet
+
+| Byte | Field | Value |
+|---:|---|---|
+| 0 | magic | `0xA5` |
+| 1 | version | `0x03` |
+| 2 | sequence | uint8, trace/correlation only |
+| 3 | direction | `0` STOP, `1` LEFT, `2` FRONT, `3` RIGHT, `4` BACK |
+| 4 | intensity | `0..100` percent; `0` only for STOP |
+| 5 | step count | `1..6`; `0` only for STOP |
+| 6 | masks, low byte | step 0 = bits 0–1, step 1 = bits 2–3, step 2 = bits 4–5, step 3 = bits 6–7 |
+| 7 | masks, high byte | step 4 = bits 0–1, step 5 = bits 2–3 |
+| 8 + 2·i | `on_ms / 10` | `1..255` (10–2550 ms) |
+| 9 + 2·i | `off_ms / 10` | `0..255` (0–2550 ms) |
+
+Motor mask bits: `0b01` LEFT, `0b10` RIGHT, `0b11` both. `0b00` is invalid, so a
+truncated or zero-padded buffer cannot be mistaken for a valid packet.
+
+Under v3 the **masks are authoritative**; byte 3 is kept for logging.
+
+### Size
+
+`8 + 2 × 6 = 20 bytes` at six steps — exactly the largest payload an ATT Write
+Request carries on the default 23-byte MTU. An alert therefore never depends on
+MTU negotiation succeeding. A `siren` from `back` is that worst case.
+
+### Example — `siren` from `back`, 92 % duty
+
+```text
+a5 03 01 04 5c 06 | 99 09 | 0d 00 0d 0f 0d 00 0d 0f 0d 00 0d 00
+```
+
+`0x0999` is `01 10 01 10 01 10` read two bits at a time from the bottom, i.e.
+masks `L R L R L R`. The six `0x0d` bytes are the 130 ms sweep halves, `0x00` is
+the seamless join inside a pulse, and `0x0f` is the 150 ms gap between pulses.
+Reproduce it with `python -m laptop.haptic_preview --bytes`.
+
+## CMD v2 packet
+
+| Byte | Field | Value |
+|---:|---|---|
+| 0 | magic | `0xA5` |
+| 1 | version | `0x02` |
+| 2 | sequence | uint8 |
+| 3 | direction | `0` STOP, `1` LEFT, `2` CENTER (both), `3` RIGHT |
+| 4 | intensity | `0..100` percent |
+| 5 | pair count | `1..4`; `0` only for STOP |
+| 6 + 2·i | `on_ms / 10`, `off_ms / 10` | |
+
+`CENTER` and v3's `FRONT` are the same code (`2`) and the same sensation. `BACK`
+cannot be expressed and a v2 packet claiming it is rejected as malformed.
+
+The firmware expands a v2 direction into per-step masks immediately, so there is
+one motor path for both versions.
+
+## Direction → motors
+
+| Direction | LEFT | RIGHT | Notes |
+|---|---|---|---|
+| STOP | off | off | also cancels the active pattern and its timer |
+| LEFT | on | off | |
+| FRONT / CENTER | on | on | simultaneous |
+| RIGHT | off | on | |
+| BACK (v3 only) | on, then | then on | per-step masks alternate; no gap between halves |
+
+## Validation
+
+Implemented in [`main/cmd_parse.c`](main/cmd_parse.c) and rejected before the
+motor sequencer sees anything. A malformed packet is refused outright rather than
+clamped into something playable — a pattern the wearer cannot interpret is worse
+than no vibration, because it teaches them to ignore the belt.
+
+| Rejected | ATT error |
+|---|---|
+| length below 6, above 20, or ≠ header + 2·n | `INVALID_ATTR_VALUE_LEN` |
+| magic ≠ `0xA5`, version not `0x02`/`0x03` | `UNLIKELY` |
+| direction above the version's maximum (`3` for v2, `4` for v3) | `UNLIKELY` |
+| intensity above 100 | `UNLIKELY` |
+| step count above the version's limit (4 for v2, 6 for v3) | `UNLIKELY` |
+| a step mask of `0b00` | `UNLIKELY` |
+| mask bits set beyond the declared step count | `UNLIKELY` |
+| `on_ms = 0` on any step | `UNLIKELY` |
+| STOP carrying a pattern or a non-zero intensity | `UNLIKELY` |
+| non-STOP with zero steps | `UNLIKELY` |
+
+`cmd_parse.c` is deliberately free of NimBLE dependencies so it compiles and runs
+on a host. `firmware/tests/run_cmd_parse_tests.py` builds it with `cc` and checks
+it against **golden packets generated by `laptop/protocol.py`**, so the Python
+encoder and the C parser cannot silently drift apart:
+
+```bash
+python firmware/tests/run_cmd_parse_tests.py
+```
+
+## Fail-safe behaviour
+
+- An explicit STOP cancels the running pattern and its timer.
+- **BLE disconnect stops the motors** before advertising resumes, so a dropped
+  laptop link cannot leave the belt buzzing.
+- A pattern is finite and ends on its own; the firmware never latches.
+- A new pattern replaces the active one rather than queueing behind it: the most
+  recent hazard is the one that matters.
+
+## Laptop-side direction normalization
+
+`laptop/protocol.py::normalize_direction` accepts what `meit-ios` reports:
+
+| Input | Result |
+|---|---|
+| `left`, `right` | `LEFT`, `RIGHT` |
+| `front`, `center`, `centre` | `FRONT` |
+| `back` | `BACK`, or `FRONT` when `--protocol 2` |
+| `unknown`, missing, anything else | suppressed — **no packet is sent** |
+
+`unknown` means the iOS bridge's own margin gate was not satisfied. Suppressing is
+deliberate: see [`../docs/HAPTIC_DESIGN.md`](../docs/HAPTIC_DESIGN.md).
