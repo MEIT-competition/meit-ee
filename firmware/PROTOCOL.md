@@ -40,6 +40,13 @@ notification, so each notify is:
 | 2 | flags, bit0 = last chunk of this event |
 | 3.. | PCM16 samples, little-endian |
 
+Laptop length gate: a contiguous sequence is not enough, because the uint8
+index wraps inside one clip (…254, 255, 0, 1…). A receiver that subscribes
+mid-event can take the clip's second index 0 as a clean start and assemble a
+gap-free tail (e.g. 10240 samples / 0.64 s). `laptop/ble_receiver.py`
+therefore forwards a clip to AI only if it is exactly 40960 samples /
+81920 bytes; any other length is discarded. The wire format is unchanged.
+
 Clip length is fixed at 2.56 s (40960 samples, `CLIP_FRAMES`=120 in
 `config.h`); meit-ai `classifier/adapter.py` keeps the first 2.5 s
 (`CLIP_SEC`). (Historical: this was ~0.5 s in earlier firmware.) **This was checked against the actual
@@ -118,9 +125,12 @@ The external meit-ai judge receives the retained wire integers unchanged.
 
 | Wire value | Direction | Motor selection |
 |---|---|---|
-| 6 | LEFT | GPIO13 only |
-| 2 | RIGHT | GPIO1 only |
-| 4 | BACK | GPIO13 + GPIO1 together |
+| 6 | LEFT | GPIO21 only |
+| 2 | RIGHT | GPIO13 only |
+| 4 | BACK | GPIO21 + GPIO13 together |
+
+Pins are defined only by `MOTOR_LEFT_GPIO` / `MOTOR_RIGHT_GPIO` in
+`main/config.h` (verified wiring: LEFT=GPIO21, RIGHT=GPIO13).
 
 If DIR reported `0xFF` and a CMD arrives, firmware plays LEFT for 80 ms,
 OFF for 40 ms, then RIGHT for 80 ms, using CMD intensity. This dedicated

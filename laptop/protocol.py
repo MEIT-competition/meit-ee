@@ -17,7 +17,13 @@ DIR_UNKNOWN = 0xFF
 DIR_LEFT, DIR_RIGHT, DIR_BACK = 6, 2, 4
 DIRECTION_NAMES = {DIR_LEFT: "LEFT", DIR_RIGHT: "RIGHT", DIR_BACK: "BACK"}
 
-SOUND_CLASS_TO_ID = {"horn": 0, "siren": 1, "crash": 2}
+# AUDIO contract (firmware/main/config.h CLIP_OUT_SAMPLES): 16 kHz mono
+# PCM16 LE, exactly 40960 samples = 81920 bytes = 2.56 s per event.
+AUDIO_SAMPLE_RATE = 16000
+AUDIO_CLIP_SAMPLES = 40960
+AUDIO_CLIP_BYTES = AUDIO_CLIP_SAMPLES * 2
+
+SOUND_CLASS_TO_ID ={"horn": 0, "siren": 1, "crash": 2}
 SOUND_ID_TO_CLASS = {v: k for k, v in SOUND_CLASS_TO_ID.items()}
 SOUND_CLASS_NONE = 0xFF
 

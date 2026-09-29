@@ -49,8 +49,10 @@ typedef struct { int dummy; } portMUX_TYPE;
 #define portENTER_CRITICAL(mux) ((void)(mux))
 #define portEXIT_CRITICAL(mux)  ((void)(mux))
 
-static int log_w_count = 0, log_e_count = 0;
-static char last_w_msg[256] = {0}, last_e_msg[256] = {0};
+// Unused in translation units that never log (e.g. audio_samples.c); the
+// attribute keeps gcc -Wall -Werror from rejecting them there.
+__attribute__((unused)) static int log_w_count = 0, log_e_count = 0;
+__attribute__((unused)) static char last_w_msg[256] = {0}, last_e_msg[256] = {0};
 static inline void meit_test_vlog(char *dst, size_t n, const char *fmt, ...)
 {
     va_list ap;

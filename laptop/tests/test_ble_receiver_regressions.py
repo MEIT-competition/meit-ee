@@ -19,7 +19,9 @@ import time
 
 import laptop.ble_receiver as br
 from laptop.ai_bridge import AIResult
-from laptop.protocol import AudioAssembler, decode_audio_chunk, DIR_RIGHT
+from laptop.protocol import (
+    AUDIO_CLIP_BYTES, AudioAssembler, decode_audio_chunk, DIR_RIGHT,
+)
 from laptop.ble_receiver import Receiver
 
 
@@ -27,7 +29,12 @@ def make_dir(event_id, direction=DIR_RIGHT, confidence_byte=200, rms_dbfs=-40):
     return bytes([event_id, direction, confidence_byte, rms_dbfs & 0xFF])
 
 
-def make_chunk(event_id, idx, last, pcm_bytes=b"\x01\x02"):
+# A contract-length clip in one chunk: process_events() discards any other
+# length before AI (see test_ble_audio_length_gate.py).
+FULL_CLIP = b"\x01\x02" * (AUDIO_CLIP_BYTES // 2)
+
+
+def make_chunk(event_id, idx, last, pcm_bytes=FULL_CLIP):
     return bytes([event_id, idx & 0xFF, 1 if last else 0]) + pcm_bytes
 
 

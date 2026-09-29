@@ -26,15 +26,24 @@ QueueHandle_t xQueueCreate(int n,size_t size) { return (void *)1; }
 int xTaskCreate(void (*fn)(void *),const char *name,int stack,void *arg,int priority,TaskHandle_t *out)
 { *out=(void *)1; return pdPASS; }
 int ledc_timer_config(const ledc_timer_config_t *t) { return ESP_OK; }
+// Physical pins come only from production config.h (MOTOR_*_GPIO); this
+// test never repeats the numbers. gpio_outputs tracks which GPIO is driven.
+_Static_assert(MOTOR_LEFT_GPIO != MOTOR_RIGHT_GPIO, "motor GPIOs must differ");
+#define GPIO_BIT(g) (1ull << (g))
+static int channel_gpio[NUM_MOTORS];
+static unsigned long long gpio_outputs;
 int ledc_channel_config(const ledc_channel_config_t *c) {
     if (c->channel < 0 || c->channel >= NUM_MOTORS) abort();
-    if (c->gpio_num != (c->channel == MOTOR_LEFT ? 21 : 13)) abort();
+    if (c->gpio_num != (c->channel == MOTOR_LEFT ? MOTOR_LEFT_GPIO : MOTOR_RIGHT_GPIO)) abort();
+    channel_gpio[c->channel] = c->gpio_num;
     return ESP_OK;
 }
 int ledc_set_duty(int mode,int channel,uint32_t duty)
 {
     if(duty) { if(!(outputs & (1u<<channel))) on_transitions++; outputs |= 1u<<channel; }
     else outputs &= ~(1u<<channel);
+    if(duty) gpio_outputs |= GPIO_BIT(channel_gpio[channel]);
+    else gpio_outputs &= ~GPIO_BIT(channel_gpio[channel]);
     return ESP_OK;
 }
 int ledc_update_duty(int mode,int channel) { return ESP_OK; }
@@ -101,9 +110,14 @@ static void burst(void) { play(1,100); play(2,100); play(3,100); play(2,200); }
 static void burst_and_tick(void) { burst(); motor_timer_cb(NULL); }
 static void expect_last(void) { CHECK(outputs==2); }
 static void play_unknown(void) { motor_play_unknown_pattern(80); }
-static void expect_left(void) { CHECK(outputs==MOTOR_MASK_LEFT); }
-static void expect_right(void) { CHECK(outputs==MOTOR_MASK_RIGHT); }
-static void expect_both(void) { CHECK(outputs==MOTOR_MASK_BOTH); }
+static void expect_left(void)
+{ CHECK(outputs==MOTOR_MASK_LEFT); CHECK(gpio_outputs==GPIO_BIT(MOTOR_LEFT_GPIO)); }
+static void expect_right(void)
+{ CHECK(outputs==MOTOR_MASK_RIGHT); CHECK(gpio_outputs==GPIO_BIT(MOTOR_RIGHT_GPIO)); }
+static void expect_both(void)
+{ CHECK(outputs==MOTOR_MASK_BOTH);
+  CHECK(gpio_outputs==(GPIO_BIT(MOTOR_LEFT_GPIO)|GPIO_BIT(MOTOR_RIGHT_GPIO))); }
+static void expect_gpio_off(void) { CHECK(gpio_outputs==0); }
 static void play_left(void) { play(motor_mask_for_direction(DIR_WIRE_LEFT), 100); }
 static void play_right(void) { play(motor_mask_for_direction(DIR_WIRE_RIGHT), 100); }
 static void play_back(void) { play(motor_mask_for_direction(DIR_WIRE_BACK), 100); }
@@ -147,9 +161,9 @@ static void prepare(int kind)
     case 9: // UNKNOWN is alternating L/R, distinct from simultaneous BACK.
         at(0,play_unknown); at(10,expect_left); at(90,expect_off);
         at(130,expect_right); at(210,expect_off); break;
-    case 10: at(0,play_left); at(10,expect_left); at(110,expect_off); break;
-    case 11: at(0,play_right); at(10,expect_right); at(110,expect_off); break;
-    case 12: at(0,play_back); at(10,expect_both); at(110,expect_off); break;
+    case 10: at(0,play_left); at(10,expect_left); at(110,expect_gpio_off); break;
+    case 11: at(0,play_right); at(10,expect_right); at(110,expect_gpio_off); break;
+    case 12: at(0,play_back); at(10,expect_both); at(110,expect_gpio_off); break;
     }
 }
 int main(int argc, char **argv)
@@ -160,9 +174,11 @@ int main(int argc, char **argv)
         "four_pairs_and_end_tick", "duplicate_due_ticks", "full_play_queue",
         "unknown_alternating", "left_only", "right_only", "back_both"};
     int selected=argc>1?atoi(argv[1]):-1;
+    if(selected<=0) printf("config.h: LEFT=GPIO%d RIGHT=GPIO%d\n",
+                           MOTOR_LEFT_GPIO, MOTOR_RIGHT_GPIO);
     for(int i=0;i<13;i++) {
         if(selected>=0 && i!=selected) continue;
-        now_us=timer_due=0; hw_armed=fail_start=false; outputs=0;
+        now_us=timer_due=0; hw_armed=fail_start=false; outputs=0; gpio_outputs=0;
         timer_starts=on_transitions=0;
         suppress_callbacks=dropped_ticks=queued=event_count=event_pos=checks=0;
         timer_armed=step_is_on=false; step_count=step_idx=0;
