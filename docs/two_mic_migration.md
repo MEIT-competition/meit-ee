@@ -125,9 +125,10 @@ GPIO15/16/17 and retired motor GPIO2/4/8/9/10/11 are not configured by this runt
 | RIGHT | 1 | 2 | 0x02 |
 | BACK | 2 | 4 | 0x03 |
 
-Calibrated LEFT-minus-RIGHT delay < −2 samples → LEFT; > +2 → RIGHT; inclusive
-[-2,+2] → BACK. `TDOA_THRESHOLD_SAMPLES` and `TDOA_LR_BIAS_SAMPLES` are calibration
-constants. At 48 kHz, 2 samples is 41.67 microseconds. No angle is fabricated.
+With the provisional T=2 setting, calibrated LEFT-minus-RIGHT delay < −2 samples
+maps to LEFT; > +2 to RIGHT; inclusive [-2,+2] to BACK. This is not a measured
+final threshold. `TDOA_THRESHOLD_SAMPLES` and `TDOA_LR_BIAS_SAMPLES` must be
+calibrated on hardware. At 48 kHz, 2 samples is 41.67 microseconds. No angle is fabricated.
 UNKNOWN uses internal -1 / wire 255 / AI -1, confidence 0. It preserves the previous
 danger-alert policy with an alternating L/R pattern instead of the retired sweep.
 Invalid/absent event records request zero mask. Valid BACK uses the same timing and
@@ -216,3 +217,26 @@ explicit limitation/unused-pin text, `legacy/*.txt`, old schematics and the hist
 bring-up log. Generated `build/` and third-party `managed_components/` are excluded
 from source-policy checks. The current main CMake target contains seven sources,
 including the new `audio_samples.c`, and no legacy target.
+
+## Pre-commit review and hardware procedure (2026-09-30)
+
+The migration was already committed as `d2d8f51` when reviewed; the worktree
+was clean. See [two_mic_bringup.md](two_mic_bringup.md) for the ordered
+flash/monitor procedure, exact log formats, measured bias/threshold selection,
+power prerequisites, BLE/AI end-to-end acceptance and remaining review risks.
+
+**TODO(power): `MOTOR_SUPPLY_MV=4200` remains provisional until battery maximum
+VM and actual motor rating are confirmed. No voltage value changed in this review.**
+
+**TODO(AI contract): AUDIO remains 16 kHz PCM16, 40960 samples = 2.56 s.
+Confirm with the AI team whether exactly 2.50 s / 40000 samples is required
+and who performs any cropping. The interface has not changed.**
+
+Final review validation rerun on this checkout: Python 34 tests PASS; actual C
+audio 160 checks PASS; motor 13/13 at both 100/1000 Hz PASS; main/event/capture
+52/52 for each of four statuses (208 total) PASS. The bring-up guide
+PowerShell blocks parsed successfully and its Python snippets passed synthetic
+LEFT/RIGHT/BACK captures, aggregate calibration and incomplete-dump rejection.
+`config.h` differs only in comments; no firmware rebuild was needed for this
+review. The earlier three target build results above are unchanged. No board
+flash or physical hardware validation was performed.

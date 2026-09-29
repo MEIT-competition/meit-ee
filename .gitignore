@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 build/
 firmware/managed_components/
+# ESP-IDF monitor captures (historical mic_bringup_log.txt is retained)
+log.*.txt

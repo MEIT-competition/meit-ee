@@ -59,6 +59,8 @@ enum { CH_LEFT = 0, CH_RIGHT = 1 };
 #define MIC_SPACING_M     0.16f
 #define TAU_MARGIN        1.6f
 // Inclusive center band [-T,+T] maps to BACK in the restricted domain.
+// TODO(calibration): 2 samples is provisional; measure bias and threshold
+// on the final geometry using docs/two_mic_bringup.md before acceptance.
 #define TDOA_THRESHOLD_SAMPLES 2.0f
 // Measured center-axis bias: subtract from LEFT-minus-RIGHT delay.
 #define TDOA_LR_BIAS_SAMPLES   0.0f
@@ -114,6 +116,8 @@ enum { MOTOR_LEFT = 0, MOTOR_RIGHT = 1, NUM_MOTORS = 2 };
 // !! chemistry off the label and set this to 4 x that chemistry's fresh-cell
 // !! maximum (from the cell datasheet). Deliberately NOT changed here because
 // !! the chemistry/voltage is not yet known.
+// TODO(power): 4200 mV is PROVISIONAL. Confirm battery maximum VM and
+// actual motor rating before powered tests; do not guess a replacement.
 #define MOTOR_SUPPLY_MV   4200
 #define MOTOR_RATED_MV    3000
 #define MOTOR_DUTY_MAX    255
@@ -155,7 +159,10 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
       SOUND_CLASS_NONE = 0xFF };
 
 // --- Per-event audio clip ---
-#define CLIP_FRAMES 120   // 120 x 1024 / 48 kHz = 2.56 s per event (meit-ai uses the first 2.5 s)
+// TODO(AI contract): current AUDIO is 16 kHz PCM16, 40960 samples = 2.56 s.
+// Confirm whether AI requires exactly 2.50 s / 40000 samples and who crops.
+// Keep the existing interface until that contract is confirmed.
+#define CLIP_FRAMES 120   // 120 x 1024 / 48 kHz = 2.56 s per event
 // Computed as (FRAME_LEN * CLIP_FRAMES) / DECIM, NOT (FRAME_LEN/DECIM) *
 // CLIP_FRAMES -- the latter truncates 1024/3 to 341 before multiplying,
 // undercounting by 24 samples over 24 frames vs. what resample_48k_to_16k
