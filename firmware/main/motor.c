@@ -1,4 +1,4 @@
-// 4x DRV8833 -> 8 vibration motors via LEDC PWM.
+// Two DRV8833 A channels -> two vibration motors via LEDC PWM.
 //
 // Pattern sequencing is owned by a dedicated FreeRTOS task. BLE commands and
 // esp_timer callbacks only enqueue messages, so sequencer state and timer APIs
@@ -18,7 +18,7 @@
 #include "motor.h"
 
 static const char *TAG = "motor";
-static const int DIR_TO_MOTOR[8] = {0, 1, 2, 3, 4, 5, 6, 7};   // VERIFY wiring
+const int MOTOR_GPIO[NUM_MOTORS] = {MOTOR_LEFT_GPIO, MOTOR_RIGHT_GPIO};
 
 // --- everything below this line is owned EXCLUSIVELY by motor_seq_task ---
 // (except seq_queue and pattern_timer, which are handles other contexts
@@ -78,7 +78,7 @@ void motor_init(void)
         .clk_cfg = LEDC_AUTO_CLK,
     };
     ESP_ERROR_CHECK(ledc_timer_config(&t));
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < NUM_MOTORS; i++) {
         ledc_channel_config_t c = {
             .gpio_num = MOTOR_GPIO[i], .speed_mode = LEDC_LOW_SPEED_MODE,
             .channel = (ledc_channel_t)i, .timer_sel = LEDC_TIMER_0,
@@ -138,7 +138,7 @@ void motor_init(void)
     }
 
     motor_all_off();   // known-idle state at boot
-    ESP_LOGI(TAG, "8 motor channels ready @ %d Hz, duty capped at %d/255 "
+    ESP_LOGI(TAG, "2 motor channels ready @ %d Hz, duty capped at %d/255 "
                   "(%d mV motor on a %d mV rail)", MOTOR_PWM_FREQ_HZ,
              MOTOR_DUTY_CAP, MOTOR_RATED_MV, MOTOR_SUPPLY_MV);
     // Log the configured drive limit at boot for hardware bring-up.
@@ -146,7 +146,7 @@ void motor_init(void)
 
 void motor_set(int idx, uint8_t duty)
 {
-    if (idx < 0 || idx >= 8) return;
+    if (idx < 0 || idx >= NUM_MOTORS) return;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)idx, duty_capped(duty));
     ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)idx);
 }
@@ -154,7 +154,7 @@ void motor_set(int idx, uint8_t duty)
 // Normalized-intensity form of motor_set(). 1.0 maps to MOTOR_DUTY_CAP.
 void motor_trigger(int idx, float intensity)
 {
-    if (idx < 0 || idx >= 8) return;
+    if (idx < 0 || idx >= NUM_MOTORS) return;
     if (intensity < 0.0f) intensity = 0.0f;
     if (intensity > 1.0f) intensity = 1.0f;
     motor_set(idx, (uint8_t)(intensity * (float)MOTOR_DUTY_CAP + 0.5f));
@@ -162,18 +162,12 @@ void motor_trigger(int idx, float intensity)
 
 void motor_all_off(void)
 {
-    for (int i = 0; i < 8; i++) motor_set(i, 0);
-}
-
-int motor_bit_for_direction(int dir_index)
-{
-    if (dir_index < 0 || dir_index >= 8) return -1;
-    return DIR_TO_MOTOR[dir_index];
+    for (int i = 0; i < NUM_MOTORS; i++) motor_set(i, 0);
 }
 
 static void apply_mask(uint8_t mask, uint8_t duty)
 {
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < NUM_MOTORS; i++)
         if (mask & (1 << i)) motor_set(i, duty);
 }
 
@@ -193,7 +187,7 @@ static bool schedule(uint32_t ms)
 // Fail-safe terminal state for any sequencer/timer error.
 static void force_all_off_and_reset(void)
 {
-    apply_mask(0xFF, 0);
+    apply_mask(MOTOR_MASK_BOTH, 0);
     step_is_on  = false;
     step_count  = 0;
     step_idx    = 0;
@@ -245,7 +239,7 @@ static void handle_play(const seq_msg_t *m)
     }
 
     // Clear any outputs left active by the pattern being replaced.
-    apply_mask(0xFF, 0);
+    apply_mask(MOTOR_MASK_BOTH, 0);
 
     memcpy(steps_buf, m->steps, sizeof(motor_step_t) * m->n_steps);
     memcpy(step_masks_buf, m->step_masks, sizeof(uint8_t) * m->n_steps);
@@ -253,6 +247,10 @@ static void handle_play(const seq_msg_t *m)
     step_idx    = 0;
     active_duty = intensity_to_duty(m->intensity_pct, 100);
     step_is_on  = false;
+    ESP_LOGI(TAG, "[MOTOR] L=%s R=%s duty=%u steps=%d",
+             (m->step_masks[0] & MOTOR_MASK_LEFT) && active_duty ? "ON" : "OFF",
+             (m->step_masks[0] & MOTOR_MASK_RIGHT) && active_duty ? "ON" : "OFF",
+             active_duty, step_count);
     advance_step();   // fires the first ON immediately, for its full on_ms
 }
 
@@ -318,29 +316,16 @@ void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
     if (n_steps > PATTERN_MAX_PAIRS) n_steps = PATTERN_MAX_PAIRS;
 
     uint8_t step_masks[PATTERN_MAX_PAIRS];
-    for (int i = 0; i < n_steps; i++) step_masks[i] = motor_mask;
+    for (int i = 0; i < n_steps; i++) step_masks[i] = motor_mask & MOTOR_MASK_BOTH;
     queue_pattern(step_masks, intensity_pct, steps, n_steps);
 }
 
 void motor_play_unknown_pattern(uint8_t intensity_pct)
 {
-    static const int cardinal_dirs[4] = {0, 2, 4, 6}; // front, right, back, left
-    uint8_t step_masks[4];
-    motor_step_t steps[4];
-
-    for (int i = 0; i < 4; i++) {
-        int bit = motor_bit_for_direction(cardinal_dirs[i]);
-        if (bit < 0) {
-            ESP_LOGE(TAG, "invalid cardinal direction mapping dir=%d; "
-                         "unknown-direction alert suppressed", cardinal_dirs[i]);
-            return;
-        }
-        step_masks[i] = (uint8_t)(1u << bit);
-        steps[i].on_ms = UNKNOWN_SWEEP_ON_MS;
-        steps[i].off_ms = (i == 3) ? 0 : UNKNOWN_SWEEP_OFF_MS;
-    }
-
-    // Exactly one motor is active at a time, so DIR_UNKNOWN no longer causes
-    // the old 0xFF eight-motor simultaneous current spike.
-    queue_pattern(step_masks, intensity_pct, steps, 4);
+    const uint8_t masks[NUM_MOTORS] = {MOTOR_MASK_LEFT, MOTOR_MASK_RIGHT};
+    const motor_step_t steps[NUM_MOTORS] = {
+        {UNKNOWN_SWEEP_ON_MS, UNKNOWN_SWEEP_OFF_MS},
+        {UNKNOWN_SWEEP_ON_MS, 0},
+    };
+    queue_pattern(masks, intensity_pct, steps, NUM_MOTORS);
 }

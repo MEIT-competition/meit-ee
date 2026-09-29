@@ -23,6 +23,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
+
+static jmp_buf capture_done;
+static int capture_running, capture_index, capture_reads, sample_phase, captured_n;
+static int sent_dir = -2;
+static int downmix_ok = 1;
+static uint8_t captured_id;
 
 // ---- stand-ins for everything else main.c calls (referenced only from
 // capture_task / ble_task / app_main, none of which this test invokes --
@@ -34,7 +41,16 @@ QueueHandle_t xQueueCreateWithCaps(int n, size_t item_size, uint32_t caps)
 void *heap_caps_calloc(size_t n, size_t size, uint32_t caps)
 { (void)caps; return calloc(n, size); }
 int xQueueSend(QueueHandle_t q, const void *item, TickType_t wait)
-{ (void)q; (void)item; (void)wait; return pdTRUE; }
+{
+    (void)q; (void)wait;
+    if (capture_running) {
+        const clip_t *clip = item;
+        captured_n = clip->n;
+        captured_id = clip->event_id;
+        longjmp(capture_done, 1);
+    }
+    return pdTRUE;
+}
 int xQueueReceive(QueueHandle_t q, void *item, TickType_t wait)
 { (void)q; (void)item; (void)wait; return 0; }
 BaseType_t xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
@@ -49,31 +65,51 @@ esp_err_t nvs_flash_init(void) { return ESP_OK; }
 esp_err_t nvs_flash_erase(void) { return ESP_OK; }
 esp_err_t audio_capture_init(void) { return ESP_OK; }
 esp_err_t audio_capture_read(audio_frame_t *out, int timeout_ms)
-{ (void)out; (void)timeout_ms; return ESP_OK; }
+{
+    (void)timeout_ms;
+    if (++capture_reads > CLIP_FRAMES + 1) abort();
+    for (int n=0; n<FRAME_LEN; ++n) {
+        out->ch[CH_LEFT][n] = .75f;
+        out->ch[CH_RIGHT][n] = .25f;
+    }
+    out->rms_dbfs[CH_LEFT] = out->rms_dbfs[CH_RIGHT] = -20;
+    return ESP_OK;
+}
 void tdoa_init(void) {}
-void tdoa_set_bus_skew_samples(int samples) { (void)samples; }
+void vTaskDelay(TickType_t ticks) { (void)ticks; }
 void tdoa_estimate(const audio_frame_t *f, direction_t *out)
-{ (void)f; if (out) memset(out, 0, sizeof(*out)); }
+{
+    (void)f;
+    memset(out, 0, sizeof(*out));
+    out->index = capture_index;
+    out->confidence = capture_index >= 0 ? 1.0f : 0.0f;
+}
 void resample_init(void) {}
-void resample_reset(void) {}
+void resample_reset(void) { sample_phase = 0; }
 int resample_48k_to_16k(const float *in, int n_in, int16_t *out)
-{ (void)in; (void)n_in; (void)out; return 0; }
+{
+    int count = 0;
+    for (int n=0; n<n_in; ++n) {
+        if (in[n] != .5f) downmix_ok = 0;
+        if (sample_phase == 0) out[count++] = (int16_t)(in[n] * 32767);
+        sample_phase = (sample_phase + 1) % DECIM;
+    }
+    return count;
+}
 void ble_svc_init(void) {}
 bool ble_svc_connected(void) { return false; }
 int ble_svc_send_audio(uint8_t event_id, const int16_t *pcm, int n)
 { (void)event_id; (void)pcm; (void)n; return 0; }
 int ble_svc_send_direction(uint8_t event_id, uint8_t dir_byte,
                            float confidence, float rms_dbfs)
-{ (void)event_id; (void)dir_byte; (void)confidence; (void)rms_dbfs; return 0; }
+{
+    (void)event_id; (void)rms_dbfs;
+    if (dir_byte == DIR_UNKNOWN && confidence != 0) abort();
+    sent_dir = dir_byte;
+    return 0;
+}
 void ble_svc_set_cmd_cb(ble_cmd_cb_t cb) { (void)cb; }
 void motor_init(void) {}
-
-// Mirrors motor.c's DIR_TO_MOTOR (identity mapping) -- see file header.
-static const int TEST_DIR_TO_MOTOR[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-int motor_bit_for_direction(int dir_index)
-{
-    return (dir_index < 0 || dir_index >= 8) ? -1 : TEST_DIR_TO_MOTOR[dir_index];
-}
 
 // This is what every test case actually inspects: what on_cmd() decided to
 // send into the motor layer.
@@ -116,21 +152,21 @@ static void reset_capture(void)
 
 static const motor_step_t STEP[1] = { { 100, 100 } };
 
-int main(void)
+int main(int argc, char **argv)
 {
     // ---- Case 1: valid event_id -> existing motor mask, UNCHANGED ----
-    // Direction 3 (RIGHT) -> identity mapping -> motor 3 -> mask 1<<3.
+    // Retained wire RIGHT=2 selects only physical motor index 1.
     int case1_before = failures;
     reset_capture();
-    record_event_direction(11, 3);
+    record_event_direction(11, DIR_WIRE_RIGHT);
     on_cmd(11, 42, 0, STEP, 1);
     CHECK(play_calls == 1);
     CHECK(unknown_calls == 0);
-    CHECK(last_mask == (uint8_t)(1u << 3));
+    CHECK(last_mask == MOTOR_MASK_RIGHT);
     CHECK(last_intensity == 42);
     CHECK(log_w_count == 0 && log_e_count == 0);
     printf("Case 1 (valid event_id -> mask 0x%02X): %s\n",
-           (uint8_t)(1u << 3), CASE_RESULT(case1_before));
+           MOTOR_MASK_RIGHT, CASE_RESULT(case1_before));
 
     // ---- Case 2: never-recorded event_id (lookup miss) -> 0x00 ----
     int case2_before = failures;
@@ -151,9 +187,9 @@ int main(void)
     // or stale" scenario the log message describes -- -> 0x00 ----
     int case3_before = failures;
     reset_capture();
-    record_event_direction(50, 2);          // slot 0
+    record_event_direction(50, DIR_WIRE_RIGHT);          // slot 0
     for (int i = 0; i < EVENT_HISTORY; i++)
-        record_event_direction((uint8_t)(150 + i), 0);  // wraps exactly
+        record_event_direction((uint8_t)(150 + i), DIR_WIRE_LEFT);  // wraps exactly
                                                           // once; the last
                                                           // of these
                                                           // overwrites
@@ -168,7 +204,7 @@ int main(void)
 
     // ---- Case 4: genuine TDoA-confirmed DIR_UNKNOWN (a real, recorded
     // event whose direction TDoA legitimately could not resolve) ->
-    // dedicated four-cardinal sequential sweep. This must NOT use the
+    // dedicated alternating LEFT/RIGHT alert. This must NOT use the
     // normal motor_play_pattern() path or the old 0xFF all-motors mask. ----
     int case4_before = failures;
     reset_capture();
@@ -178,15 +214,15 @@ int main(void)
     CHECK(unknown_calls == 1);
     CHECK(last_unknown_intensity == 60);
     CHECK(log_w_count == 0 && log_e_count == 0);
-    printf("Case 4 (recorded DIR_UNKNOWN -> four-cardinal sweep): %s\n",
+    printf("Case 4 (recorded DIR_UNKNOWN -> alternating LEFT/RIGHT alert): %s\n",
            CASE_RESULT(case4_before));
 
     // ---- Case 5: corrupted/invalid stored direction (neither DIR_UNKNOWN
-    // nor 0..7) -> 0x00. record_event_direction() itself does not validate
+    // nor a supported wire value) -> 0x00. record_event_direction() itself does not validate
     // its input, so this models the defensive branch directly. ----
     int case5_before = failures;
     reset_capture();
-    record_event_direction(99, 42 /* not DIR_UNKNOWN, not 0..7 */);
+    record_event_direction(99, 42 /* not DIR_UNKNOWN, not a supported wire value */);
     on_cmd(99, 10, 0, STEP, 1);
     CHECK(play_calls == 1);
     CHECK(unknown_calls == 0);
@@ -195,22 +231,45 @@ int main(void)
     printf("Case 5 (invalid stored direction -> mask 0x00): %s\n",
            CASE_RESULT(case5_before));
 
-    // ---- Case 6: all 8 directions still map identically through the
-    // normal path -- confirms the fix touches only the two error paths. ----
-    int all_ok = 1;
-    for (int d = 0; d < 8; d++) {
+    // Exercise every supported wire value through the event lookup and CMD path.
+    const uint8_t wires[] = {DIR_WIRE_LEFT, DIR_WIRE_RIGHT, DIR_WIRE_BACK};
+    const uint8_t masks[] = {MOTOR_MASK_LEFT, MOTOR_MASK_RIGHT, MOTOR_MASK_BOTH};
+    for (int d = 0; d < DIRECTION_COUNT; d++) {
         reset_capture();
-        record_event_direction((uint8_t)(200 + d), (uint8_t)d);
+        record_event_direction((uint8_t)(200 + d), wires[d]);
         on_cmd((uint8_t)(200 + d), 5, 0, STEP, 1);
-        if (last_mask != (uint8_t)(1u << d) || log_w_count || log_e_count)
-            all_ok = 0;
-        CHECK(last_mask == (uint8_t)(1u << d));
+        CHECK(last_mask == masks[d]);
         CHECK(unknown_calls == 0);
         CHECK(log_w_count == 0 && log_e_count == 0);
     }
-    printf("Case 6 (all 8 directions, identity mapping intact): %s\n",
-           all_ok ? "PASS" : "SEE ABOVE");
+    // Retired wire values must never alias compact vote indices.
+    const uint8_t invalid[] = {0, 1, 3, 5, 7};
+    for (unsigned d = 0; d < sizeof(invalid); ++d) {
+        reset_capture();
+        record_event_direction(100, invalid[d]);
+        on_cmd(100, 50, 0, STEP, 1);
+        CHECK(last_mask == 0);
+        CHECK(log_e_count == 1);
+        CHECK(unknown_calls == 0);
+    }
 
+    // Exercise real capture/vote/collect flow for each compact index and UNKNOWN.
+    capture_index = argc > 1 ? atoi(argv[1]) : DIR_BACK;
+    capture_running = 1;
+    cap_clip = calloc(1, sizeof(*cap_clip));
+    if (!cap_clip) abort();
+    if (setjmp(capture_done) == 0) capture_task(NULL);
+    capture_running = 0;
+    CHECK(capture_reads == CLIP_FRAMES);
+    CHECK(captured_n == CLIP_OUT_SAMPLES);
+    CHECK(downmix_ok);
+    CHECK(sent_dir == direction_to_wire(capture_index));
+    uint8_t stored;
+    CHECK(lookup_event_direction(captured_id, &stored));
+    CHECK(stored == direction_to_wire(capture_index));
+    free(cap_clip);
+    printf("Capture/vote index=%d -> wire=%d, samples=%d\n",
+           capture_index, sent_dir, captured_n);
     printf("\nRESULT: %d/%d checks passed, %d failing\n",
            checks - failures, checks, failures);
     return failures ? 1 : 0;

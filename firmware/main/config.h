@@ -7,41 +7,15 @@
 #define DECIM             (TDOA_FS_HZ / AI_FS_HZ)
 #define FRAME_LEN         1024           // 21.3 ms @48k. FFT size = 2048.
 #define FFT_N             2048
-#define NUM_MICS          4
+#define NUM_MICS          2
+#include "direction.h"
 
-// --- I2S bus A (master, generates BCLK/WS) ---
-#define I2S_A_BCLK        GPIO_NUM_5
-#define I2S_A_WS          GPIO_NUM_6
-#define I2S_A_DIN         GPIO_NUM_7     // mic FRONT (L/R=GND) + RIGHT (L/R=VDD)
-// --- I2S bus B (slave) ---
-// CURRENT FIRMWARE: I2S1 takes BCLK/WS INTERNALLY from the GPIO5/6 pads via
-// the GPIO matrix (audio_capture.c connect_i2s0_clocks_to_i2s1()). The
-// I2S_B_BCLK/I2S_B_WS values below are NOT configured by any code any more;
-// the physical GPIO5<->16 / GPIO6<->17 jumpers are left in place but unused.
-// The historical note below explains why the pins were kept distinct.
-#define I2S_B_BCLK        GPIO_NUM_16
-#define I2S_B_WS          GPIO_NUM_17
-#define I2S_B_DIN         GPIO_NUM_15    // mic BACK (L/R=GND) + LEFT (L/R=VDD)
-// GPIO_NUM_16/17 are placeholders, same VERIFY-against-the-real-board
-// caveat as every other GPIO in this file.
-//
-// DELIBERATELY NOT the same GPIO numbers as bus A's BCLK/WS. An earlier
-// draft declared I2S_B_BCLK/WS as GPIO5/6 too, i.e. one ESP32 pin
-// configured as output for bus A (master) and input for bus B (slave) at
-// the same time. Whether two different I2S peripherals can share one
-// physical GPIO that way isn't something the API reference actually
-// promises either way, so it's a real unknown to carry into hardware
-// bring-up for no real benefit -- wiring is functionally the same either
-// way. Wire it instead as:
-//   ESP32 GPIO5  --(I2S0/bus A, output)--+
-//                                        +-- physical jumper --+
-//   ESP32 GPIO16 --(I2S1/bus B, input) --+                     |
-//                                            (same for WS: 6 <-> 17)
-// Same electrical net (BCLK/WS truly shared, so no sample clock drift
-// between the two peripherals -- that part of the design is unchanged),
-// but ESP32 sees two distinct GPIO numbers, one output-only and one
-// input-only, instead of one pin doing double duty. LOLIN S3 has enough
-// free GPIOs that this costs nothing but two jumper wires.
+// Single I2S0 master, Philips stereo: LEFT slot first, RIGHT slot second.
+#define I2S_BCLK          GPIO_NUM_5
+#define I2S_WS            GPIO_NUM_6
+#define I2S_DIN           GPIO_NUM_7
+// Drain > 2^18 startup SCK cycles (4096 stereo frames at 64 clocks/frame).
+#define I2S_WARMUP_FRAMES 5
 
 // ESP-IDF's I2S DMA requires each individual DMA buffer/descriptor to stay
 // at or under 4092 bytes -- a hardware descriptor length-field limit, not
@@ -77,13 +51,17 @@
 #define SD_CS_PIN         GPIO_NUM_21
 
 
-// Channel order used everywhere: FRONT, RIGHT, BACK, LEFT
-enum { CH_FRONT = 0, CH_RIGHT = 1, CH_BACK = 2, CH_LEFT = 3 };
+// DMA slot order: L/R=GND -> CH_LEFT, L/R=3V3 -> CH_RIGHT.
+enum { CH_LEFT = 0, CH_RIGHT = 1 };
 
-// --- geometry (METRES, +x right, +y front). MEASURE THE REAL BELT. ---
+// Measure actual lateral microphone spacing and calibrate on the wearer.
 #define SPEED_OF_SOUND    343.0f
-#define MIC_RADIUS_M      0.08f
-#define TAU_MARGIN        1.6f           // torso diffraction path is longer
+#define MIC_SPACING_M     0.16f
+#define TAU_MARGIN        1.6f
+// Inclusive center band [-T,+T] maps to BACK in the restricted domain.
+#define TDOA_THRESHOLD_SAMPLES 2.0f
+// Measured center-axis bias: subtract from LEFT-minus-RIGHT delay.
+#define TDOA_LR_BIAS_SAMPLES   0.0f
 
 // --- GCC-PHAT ---
 #define PHAT_FMIN_HZ      200.0f
@@ -92,10 +70,10 @@ enum { CH_FRONT = 0, CH_RIGHT = 1, CH_BACK = 2, CH_LEFT = 3 };
 // NOT validated against real hardware, and NOT numerically comparable to
 // the Python reference's confidence (tdoa/gcc_phat.py) -- the two use
 // different noise-floor statistics (Python: median of the correlation
-// window; C: mean of abs(), see tdoa.c) and only the C path applies a Hann
+// window; C: mean of abs(), see tdoa.c). Both direction paths apply a Hann
 // window before the FFT. Same underlying idea, different numbers. Do not
 // treat 0.15 as validated by the Python synthetic tests passing; once real
-// mics are in, log conf_lr/conf_fb/confidence (direction_t, tdoa.h) for
+// mics are in, log conf_lr/confidence (direction_t, tdoa.h) for
 // horn/siren/crash/normal samples and pick a real threshold from that --
 // see main.c's EV_VOTING logging.
 #define MIN_CONFIDENCE    0.15f
@@ -114,7 +92,13 @@ enum { CH_FRONT = 0, CH_RIGHT = 1, CH_BACK = 2, CH_LEFT = 3 };
 // once meit-ai's DB_GATE is measured against real hardware, not guessed.
 #define RMS_GATE_DBFS     -60.0f
 
-// --- DRV8833 x4 -> 8 motors, LEDC PWM ---
+// --- Two DRV8833 boards, A channel only, two motors, LEDC PWM ---
+enum { MOTOR_LEFT = 0, MOTOR_RIGHT = 1, NUM_MOTORS = 2 };
+#define MOTOR_LEFT_GPIO   GPIO_NUM_13
+#define MOTOR_RIGHT_GPIO  GPIO_NUM_1
+#define MOTOR_MASK_LEFT  (1u << MOTOR_LEFT)
+#define MOTOR_MASK_RIGHT (1u << MOTOR_RIGHT)
+#define MOTOR_MASK_BOTH  (MOTOR_MASK_LEFT | MOTOR_MASK_RIGHT)
 // One input per motor is PWM-driven and the partner input should be held LOW.
 // For the Adafruit DRV8833 breakout, SLP must be HIGH for the outputs to run.
 // MVP wiring uses SLP strapped to 3V3, so firmware control is disabled here.
@@ -151,20 +135,19 @@ _Static_assert(MOTOR_DUTY_CAP <= MOTOR_DUTY_MAX,
 // audible noise and low-duty startup behavior before finalizing.
 #define MOTOR_PWM_FREQ_HZ 20000
 #define MOTOR_PWM_RES     LEDC_TIMER_8_BIT
-extern const int MOTOR_GPIO[8];   // verify against the actual LOLIN S3 wiring
+extern const int MOTOR_GPIO[NUM_MOTORS];
 
 // --- AI team interface (meit-ai, README "출력 포맷" / decision/*.py) ---
 // Keep these in sync with meit-ai by hand -- there is no shared repo for it.
 // See firmware/PROTOCOL.md for the exact byte layout this backs.
-#define DIR_UNKNOWN       0xFF   // wire value for "direction: -1" (판별 불가)
 #define GATING_MS         250    // meit-ai decision/patterns.py GATING_MS.
                                  // Only affects which pattern length the AI
                                  // side chooses; nothing here reads it, but
                                  // if it changes, PATTERN_MAX_PAIRS below
                                  // may need to grow (siren FULL = 3 pairs).
 #define PATTERN_MAX_PAIRS 4
-#define UNKNOWN_SWEEP_ON_MS  80   // DIR_UNKNOWN: one cardinal motor at a time
-#define UNKNOWN_SWEEP_OFF_MS 40   // gap between cardinal motors
+#define UNKNOWN_SWEEP_ON_MS  80   // DIR_UNKNOWN: LEFT then RIGHT, one motor at a time
+#define UNKNOWN_SWEEP_OFF_MS 40   // gap between the two motors
 
 // meit-ai classifier/adapter.py CLASSES = ["horn","siren","crash","normal"].
 // "normal" never reaches firmware -- decision/judge.py returns None for it.
@@ -219,7 +202,7 @@ enum { SOUND_CLASS_HORN = 0, SOUND_CLASS_SIREN = 1, SOUND_CLASS_CRASH = 2,
 // ---- Bring-up only: synthetic events (no microphones needed) ----
 // 1 = replace the microphone capture task with fake_event_task (main.c): one
 // event every MEIT_FAKE_EVENT_PERIOD_MS while BLE is connected, direction
-// cycling 0..7, fixed 1 kHz tone clip. Lets BLE -> laptop -> CMD -> motor be
+// cycling LEFT / RIGHT / BACK, fixed 1 kHz tone clip. Lets BLE -> laptop -> CMD -> motor be
 // tested while the microphone hardware is still dead. MUST be 0 for demo.
 #define MEIT_FAKE_EVENTS          0
 #define MEIT_FAKE_EVENT_PERIOD_MS 10000

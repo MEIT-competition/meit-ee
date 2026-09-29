@@ -7,19 +7,16 @@
 
 static const char *TAG = "motor_self_test";
 
-/* Same bring-up mapping as production main.c; verify against actual wiring. */
-const int MOTOR_GPIO[8] = {1, 2, 13, 4, 8, 9, 10, 11};
-
 void app_main(void)
 {
     const float intensity = CONFIG_MEIT_MOTOR_TEST_INTENSITY_PCT / 100.0f;
 
     motor_init();
     motor_all_off();
-    ESP_LOGI(TAG, "start: intensity=%d%%, one motor at a time",
+    ESP_LOGI(TAG, "start: intensity=%d%%, LEFT then RIGHT then BOTH",
              CONFIG_MEIT_MOTOR_TEST_INTENSITY_PCT);
 
-    for (int motor = 0; motor < 8; ++motor) {
+    for (int motor = 0; motor < NUM_MOTORS; ++motor) {
         motor_all_off();
         ESP_LOGI(TAG, "motor=%d gpio=%d intensity=%d%%",
                  motor, MOTOR_GPIO[motor], CONFIG_MEIT_MOTOR_TEST_INTENSITY_PCT);
@@ -29,6 +26,10 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_MEIT_MOTOR_TEST_GAP_MS));
     }
 
+    ESP_LOGI(TAG, "BACK: LEFT + RIGHT together");
+    motor_trigger(MOTOR_LEFT, intensity);
+    motor_trigger(MOTOR_RIGHT, intensity);
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_MEIT_MOTOR_TEST_ON_MS));
     motor_all_off();
     ESP_LOGI(TAG, "complete: all motors off");
 }

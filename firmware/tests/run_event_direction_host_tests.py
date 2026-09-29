@@ -9,9 +9,9 @@ No ESP-IDF, board, or Python third-party packages are required.
 
 This mirrors run_motor_host_tests.py's approach (real production source,
 compiled against minimal stand-in headers, in a throwaway temp dir) applied
-to main.c's on_cmd()/event-table logic instead of motor.c's sequencer. See
-event_direction_host_stub_template.h for a reviewable copy of the stub
-content generated below -- keep the two in sync if either changes.
+to main.c's on_cmd()/event table and capture/vote/collect logic. The real
+audio_downmix() is linked; acquisition, TDoA and resampling have deterministic
+stand-ins here. Their actual implementations are covered by the audio suite.
 """
 import argparse
 import pathlib
@@ -40,6 +40,8 @@ typedef void *QueueHandle_t;
 typedef void *TaskHandle_t;
 #define pdTRUE 1
 #define pdPASS 1
+#define pdMS_TO_TICKS(ms) (ms)
+void vTaskDelay(TickType_t ticks);
 #define portMAX_DELAY UINT32_MAX
 
 typedef struct { int dummy; } portMUX_TYPE;
@@ -111,16 +113,18 @@ def main():
                    if __import__('os').name == 'nt' else 'event_direction_tests')
         command = [args.cc] + (['cc'] if args.zig else [])
         command += ['-std=c11', '-O0', '-Wall', '-Wextra', '-Werror',
-                    '-Wno-unused-parameter',
+                    '-Wno-unused-parameter', '-D_GNU_SOURCE',
                     '-I', str(d), '-I', str(main_dir),
                     str(here / 'event_direction_host_test.c'),
-                    '-o', str(exe)]
+                    str(main_dir / 'audio_samples.c'),
+                    '-o', str(exe), '-lm']
         subprocess.run(command, check=True)
         print(f'source: {source}', flush=True)
-        run = subprocess.run([str(exe)], timeout=30)
-        if run.returncode:
-            print(f'event_direction_host_test: exit={run.returncode}', flush=True)
-            result = 1
+        for index in range(-1, 3):
+            run = subprocess.run([str(exe), str(index)], timeout=30)
+            if run.returncode:
+                print(f'event_direction_host_test: exit={run.returncode}', flush=True)
+                result = 1
     return result
 
 if __name__ == '__main__':

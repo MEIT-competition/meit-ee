@@ -5,4 +5,4 @@ set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/../../sdkconfig.defaults")
 set(COMPONENTS "main")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(meit_dual_i2s_sync_test)
+project(meit_stereo_i2s_test)

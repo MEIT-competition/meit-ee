@@ -11,7 +11,7 @@
 
 #define CAPTURE_FRAMES 8
 
-static const char *TAG = "dual_i2s_sync";
+static const char *TAG = "stereo_i2s";
 static audio_frame_t frame;
 
 void app_main(void)
@@ -21,7 +21,7 @@ void app_main(void)
     float *capture = heap_caps_malloc(total_samples * sizeof(*capture),
                                   MALLOC_CAP_8BIT);
     if (capture == NULL) {
-        ESP_LOGE(TAG, "PSRAM allocation failed for %u samples",
+        ESP_LOGE(TAG, "capture allocation failed for %u samples",
                  (unsigned)total_samples);
         return;
     }
@@ -45,14 +45,12 @@ void app_main(void)
         }
     }
 
-    printf("MEIT_DUMP_BEGIN,fs=%d,channels=FRONT|RIGHT|BACK|LEFT,samples=%u\n",
+    printf("MEIT_DUMP_BEGIN,fs=%d,channels=LEFT|RIGHT,samples=%u\n",
            TDOA_FS_HZ, (unsigned)samples_per_channel);
     for (size_t n = 0; n < samples_per_channel; ++n) {
-        printf("MEIT_RAW,%u,%.9g,%.9g,%.9g,%.9g\n", (unsigned)n,
-               capture[CH_FRONT * samples_per_channel + n],
-               capture[CH_RIGHT * samples_per_channel + n],
-               capture[CH_BACK  * samples_per_channel + n],
-               capture[CH_LEFT  * samples_per_channel + n]);
+        printf("MEIT_RAW,%u,%.9g,%.9g\n", (unsigned)n,
+               capture[CH_LEFT * samples_per_channel + n],
+               capture[CH_RIGHT * samples_per_channel + n]);
     }
     printf("MEIT_DUMP_END,samples=%u\n", (unsigned)samples_per_channel);
     fflush(stdout);

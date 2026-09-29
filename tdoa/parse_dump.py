@@ -1,4 +1,4 @@
-"""Convert a MEIT dual-I2S serial dump to a NumPy (4, N) array."""
+"""Convert a MEIT stereo I2S serial dump to a NumPy (2, N) array."""
 
 import argparse
 import re
@@ -21,8 +21,8 @@ def parse_dump(path):
             if marker < 0:
                 continue
             fields = line[marker:].strip().split(",")
-            if len(fields) != 6:
-                raise ValueError(f"line {line_number}: expected 6 CSV fields")
+            if len(fields) != 4:
+                raise ValueError(f"line {line_number}: expected 4 CSV fields")
             sample_index = int(fields[1])
             if sample_index != expected_index:
                 raise ValueError(
@@ -35,8 +35,8 @@ def parse_dump(path):
     if not rows:
         raise ValueError("no MEIT_RAW rows found")
     channels = np.asarray(rows, dtype=np.float32).T
-    if channels.shape[0] != 4:
-        raise ValueError(f"expected 4 channels, got shape {channels.shape}")
+    if channels.shape[0] != 2:
+        raise ValueError(f"expected 2 channels, got shape {channels.shape}")
     return channels
 
 

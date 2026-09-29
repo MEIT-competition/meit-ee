@@ -19,11 +19,11 @@ import time
 
 import laptop.ble_receiver as br
 from laptop.ai_bridge import AIResult
-from laptop.protocol import AudioAssembler, decode_audio_chunk
+from laptop.protocol import AudioAssembler, decode_audio_chunk, DIR_RIGHT
 from laptop.ble_receiver import Receiver
 
 
-def make_dir(event_id, direction=0, confidence_byte=200, rms_dbfs=-40):
+def make_dir(event_id, direction=DIR_RIGHT, confidence_byte=200, rms_dbfs=-40):
     return bytes([event_id, direction, confidence_byte, rms_dbfs & 0xFF])
 
 

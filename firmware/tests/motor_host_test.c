@@ -6,7 +6,6 @@
 #include <setjmp.h>
 #include "motor_under_test.c"
 
-const int MOTOR_GPIO[8] = {1,2,13,4,8,9,10,11};
 static int64_t now_us, timer_due;
 static bool hw_armed, fail_start;
 static unsigned outputs;
@@ -27,7 +26,11 @@ QueueHandle_t xQueueCreate(int n,size_t size) { return (void *)1; }
 int xTaskCreate(void (*fn)(void *),const char *name,int stack,void *arg,int priority,TaskHandle_t *out)
 { *out=(void *)1; return pdPASS; }
 int ledc_timer_config(const ledc_timer_config_t *t) { return ESP_OK; }
-int ledc_channel_config(const ledc_channel_config_t *c) { return ESP_OK; }
+int ledc_channel_config(const ledc_channel_config_t *c) {
+    if (c->channel < 0 || c->channel >= NUM_MOTORS) abort();
+    if (c->gpio_num != (c->channel == MOTOR_LEFT ? 13 : 1)) abort();
+    return ESP_OK;
+}
 int ledc_set_duty(int mode,int channel,uint32_t duty)
 {
     if(duty) { if(!(outputs & (1u<<channel))) on_transitions++; outputs |= 1u<<channel; }
@@ -94,14 +97,16 @@ static void expect_idle(void) { CHECK(outputs==0); CHECK(timer_starts==0); }
 static void expect_first_off(void) { CHECK(outputs==0); CHECK(on_transitions==1); }
 static void finish_case(void) { CHECK(outputs==0); longjmp(finish,1); }
 static void expect_a(void) { CHECK(outputs==1); }
-static void burst(void) { play(1,100); play(2,100); play(4,100); play(8,200); }
+static void burst(void) { play(1,100); play(2,100); play(3,100); play(2,200); }
 static void burst_and_tick(void) { burst(); motor_timer_cb(NULL); }
-static void expect_last(void) { CHECK(outputs==8); }
+static void expect_last(void) { CHECK(outputs==2); }
 static void play_unknown(void) { motor_play_unknown_pattern(80); }
-static void expect_front(void) { CHECK(outputs==(1u<<0)); }
-static void expect_right(void) { CHECK(outputs==(1u<<2)); }
-static void expect_back(void) { CHECK(outputs==(1u<<4)); }
-static void expect_left(void) { CHECK(outputs==(1u<<6)); }
+static void expect_left(void) { CHECK(outputs==MOTOR_MASK_LEFT); }
+static void expect_right(void) { CHECK(outputs==MOTOR_MASK_RIGHT); }
+static void expect_both(void) { CHECK(outputs==MOTOR_MASK_BOTH); }
+static void play_left(void) { play(motor_mask_for_direction(DIR_WIRE_LEFT), 100); }
+static void play_right(void) { play(motor_mask_for_direction(DIR_WIRE_RIGHT), 100); }
+static void play_back(void) { play(motor_mask_for_direction(DIR_WIRE_BACK), 100); }
 static void overflow_ticks(void)
 { for(int i=0;i<SEQ_QUEUE_LEN+1;i++) motor_timer_cb(NULL); }
 static void expect_drop(void) { CHECK(dropped_ticks==1); CHECK(outputs==0); }
@@ -139,12 +144,12 @@ static void prepare(int kind)
         suppress_callbacks=1;
         at(0,play_a); at(110,burst_and_tick);
         at(120,expect_last); at(250,expect_last); at(350,expect_off); break;
-    case 9: // DIR_UNKNOWN sweep: front -> right -> back -> left, one at a time.
-        at(0,play_unknown);
-        at(10,expect_front); at(90,expect_off);
-        at(130,expect_right); at(210,expect_off);
-        at(250,expect_back); at(330,expect_off);
-        at(370,expect_left); at(450,expect_off); break;
+    case 9: // UNKNOWN is alternating L/R, distinct from simultaneous BACK.
+        at(0,play_unknown); at(10,expect_left); at(90,expect_off);
+        at(130,expect_right); at(210,expect_off); break;
+    case 10: at(0,play_left); at(10,expect_left); at(110,expect_off); break;
+    case 11: at(0,play_right); at(10,expect_right); at(110,expect_off); break;
+    case 12: at(0,play_back); at(10,expect_both); at(110,expect_off); break;
     }
 }
 int main(int argc, char **argv)
@@ -153,9 +158,9 @@ int main(int argc, char **argv)
     const char *names[]={"late_tick_after_drain", "inactive_tick", "tick_after_completion",
         "queue_full_and_lost_tick", "consecutive_play", "start_failure_and_tick",
         "four_pairs_and_end_tick", "duplicate_due_ticks", "full_play_queue",
-        "unknown_cardinal_sweep"};
+        "unknown_alternating", "left_only", "right_only", "back_both"};
     int selected=argc>1?atoi(argv[1]):-1;
-    for(int i=0;i<10;i++) {
+    for(int i=0;i<13;i++) {
         if(selected>=0 && i!=selected) continue;
         now_us=timer_due=0; hw_armed=fail_start=false; outputs=0;
         timer_starts=on_transitions=0;

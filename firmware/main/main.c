@@ -30,13 +30,6 @@
 #include "motor.h"
 
 static const char *TAG = "main";
-const int MOTOR_GPIO[8] = {1, 2, 13, 4, 8, 9, 10, 11};
-// GPIO3 deliberately avoided: it's an ESP32-S3 strapping/chip-boot-config
-// pin (see firmware/PINMAP.md "Reserved / avoided GPIO" -- GPIO0/3/45/46).
-// Using it for anything external risks boot issues if the DRV8833 or
-// wiring pulls it during reset -- not worth the debugging time on a 5-day
-// schedule. VERIFY the rest against the actual LOLIN S3 pinout regardless.
-
 typedef struct { int16_t pcm[CLIP_OUT_SAMPLES]; int n; uint8_t event_id; } clip_t;
 static QueueHandle_t q;
 
@@ -104,54 +97,22 @@ static void on_cmd(uint8_t event_id, uint8_t intensity, uint8_t sound_class,
                          // SD-card event logging is added on this side.
     uint8_t dir;
     if (!lookup_event_direction(event_id, &dir)) {
-        // No direction record for this event at all -- it was never
-        // recorded, or the ring (EVENT_HISTORY slots) already cycled past
-        // it before this CMD arrived. This is a fault (a lost/stale
-        // record), not "direction unknown": we have no data to alert on,
-        // so the safe output is OFF.
-        //
-        // Previously this set dir = DIR_UNKNOWN and fell through to the
-        // branch below, which made a lookup/timing bug produce mask=0xFF --
-        // the single strongest possible motor output -- as its "safe
-        // fallback". That conflated this case with the genuine, looked-up
-        // DIR_UNKNOWN case below (TDoA legitimately couldn't localize a
-        // real, recorded danger sound), which is an intentional alert
-        // pattern, not an error. Keep them separate: the genuine unknown
-        // case gets its own low-peak four-cardinal sweep below.
-        ESP_LOGW(TAG, "CMD for unknown event_id=%u (evicted or stale?) -- "
-                     "no direction record, motors OFF (fail-safe)", event_id);
-        motor_play_pattern(0x00, intensity, steps, n_steps);
+        ESP_LOGW(TAG, "CMD for unknown event_id=%u -- motors OFF", event_id);
+        motor_play_pattern(0, intensity, steps, n_steps);
         return;
     }
-
     if (dir == DIR_UNKNOWN) {
-        // A real danger event was recorded, but TDoA could not localize it.
-        // Do not use the old 0xFF all-motors-on fallback: sweep the four
-        // cardinal motors front -> right -> back -> left, one at a time.
-        // This keeps an unmistakable "direction unknown" alert while
-        // avoiding an 8-motor simultaneous current spike.
+        ESP_LOGI(TAG, "[DIR] UNKNOWN event=%u: alternating LEFT/RIGHT alert", event_id);
         motor_play_unknown_pattern(intensity);
         return;
     }
-
-    uint8_t mask;
-    int bit = motor_bit_for_direction(dir);
-    if (bit < 0) {
-        // dir is neither DIR_UNKNOWN nor a valid 0..7 index. The only
-        // writer, record_event_direction() (see capture_task), only
-        // ever stores DIR_UNKNOWN or 0..7, so this means the event
-        // table holds a value it should not be able to hold --
-        // corrupted state, not a real direction. Same fail-safe
-        // reasoning as the lookup-miss case above: we don't actually
-        // know where to alert, so OFF is the safe choice, not
-        // all-motors-on.
-        ESP_LOGE(TAG, "event %u has invalid stored direction=%u "
-                     "(expected DIR_UNKNOWN or 0..7) -- motors OFF "
-                     "(fail-safe)", event_id, dir);
-        mask = 0x00;
-    } else {
-        mask = (uint8_t)(1 << bit);
-    }
+    uint8_t mask = motor_mask_for_direction(dir);
+    if (mask == 0)
+        ESP_LOGE(TAG, "event %u invalid direction=%u -- motors OFF", event_id, dir);
+    ESP_LOGI(TAG, "[DIR] %s event=%u [MOTOR] L=%s R=%s",
+             direction_name(direction_from_wire(dir)), event_id,
+             (mask & MOTOR_MASK_LEFT) ? "ON" : "OFF",
+             (mask & MOTOR_MASK_RIGHT) ? "ON" : "OFF");
     motor_play_pattern(mask, intensity, steps, n_steps);
 }
 
@@ -163,17 +124,33 @@ static void capture_task(void *arg)
 {
     static audio_frame_t f;
     clip_t *clip = cap_clip;   // PSRAM, allocated in app_main()
-    static float dir_votes[8];
-    static int dir_counts[8];
+    static float dir_votes[DIRECTION_COUNT];
+    static int dir_counts[DIRECTION_COUNT];
     static ev_state_t state = EV_IDLE;
     static int votes_left = 0;
-    static int chosen_ch = CH_FRONT;
+    static float mono[FRAME_LEN];
+    static unsigned log_frames;
+    static unsigned read_errors;
     static uint8_t event_id_ctr = 0;
     static uint8_t cur_event_id = 0;
     static int cooldown_left = 0;
 
     while (1) {
-        if (audio_capture_read(&f, 200) != ESP_OK) continue;
+        esp_err_t read_err = audio_capture_read(&f, 200);
+        if (read_err != ESP_OK) {
+            if ((read_errors++ % 50) == 0)
+                ESP_LOGW(TAG, "[MIC] capture error=%d; dropping partial event", (int)read_err);
+            // Drop a partial event: never present discontinuous audio as a full clip.
+            state = EV_IDLE;
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        read_errors = 0;
+        if (++log_frames >= TDOA_FS_HZ / FRAME_LEN) {
+            ESP_LOGI(TAG, "[MIC] L_rms=%.1f R_rms=%.1f dBFS",
+                     f.rms_dbfs[CH_LEFT], f.rms_dbfs[CH_RIGHT]);
+            log_frames = 0;
+        }
 
         if (state == EV_COOLDOWN) {
             // Sustained loud sound (a real siren, say) must not re-trigger
@@ -184,16 +161,7 @@ static void capture_task(void *arg)
             continue;
         }
 
-        // Loudest of the 4 mics, not just FRONT -- a sound from behind can
-        // be shadowed by the torso on the front mic alone, which would
-        // both under-read the loudness gate and hand the AI a weaker
-        // recording than the belt actually captured. Whichever channel
-        // wins is fixed for the rest of THIS event so the AI clip doesn't
-        // jump between mics mid-recording; it is re-evaluated fresh at the
-        // next event.
-        int loud_ch = 0; float loud_db = f.rms_dbfs[0];
-        for (int c = 1; c < NUM_MICS; c++)
-            if (f.rms_dbfs[c] > loud_db) { loud_db = f.rms_dbfs[c]; loud_ch = c; }
+        float loud_db = fmaxf(f.rms_dbfs[CH_LEFT], f.rms_dbfs[CH_RIGHT]);
 
         if (state == EV_IDLE) {
             // This is a PRE-gate only (see RMS_GATE_DBFS in config.h) --
@@ -204,13 +172,12 @@ static void capture_task(void *arg)
             // Recall over precision. See PROTOCOL.md.
             if (loud_db < RMS_GATE_DBFS) continue;
             cur_event_id = event_id_ctr++;
-            chosen_ch = loud_ch;
             memset(dir_votes, 0, sizeof(dir_votes));
             memset(dir_counts, 0, sizeof(dir_counts));
             votes_left = TDOA_VOTE_FRAMES;
             clip->n = 0;
             resample_reset();   // don't let the previous event's FIR tail
-                                // (possibly a different mic channel) leak in
+                                // leak into the next clip
             state = EV_VOTING;
             // fall through -- don't waste this frame's audio or TDoA read
         }
@@ -238,19 +205,20 @@ static void capture_task(void *arg)
             // same as Python's reference (see config.h). Once real mics
             // are wired up, watch this line for horn/siren/crash/normal
             // and pick a real threshold from what actually shows up here.
-            ESP_LOGI(TAG, "event %u frame %d: idx=%d conf=%.2f (lr=%.2f fb=%.2f) rms=%.1f",
-                    cur_event_id, TDOA_VOTE_FRAMES - votes_left,
-                    d.index, d.confidence, d.conf_lr, d.conf_fb, loud_db);
-            if (d.confidence > 0.0f) {
-                dir_votes[d.index & 7] += d.confidence;
-                dir_counts[d.index & 7]++;
+            ESP_LOGI(TAG, "[TDOA] delay_samples=%.3f delay_us=%.1f conf=%.2f [DIR] %s",
+                     d.tau_lr_s * TDOA_FS_HZ, d.tau_lr_s * 1e6f,
+                     d.confidence, direction_name(d.index));
+            if (d.confidence > 0.0f && d.index >= 0 && d.index < DIRECTION_COUNT) {
+                dir_votes[d.index] += d.confidence;
+                dir_counts[d.index]++;
             }
             votes_left--;
-            clip->n += resample_48k_to_16k(f.ch[chosen_ch], FRAME_LEN, clip->pcm + clip->n);
+            audio_downmix(&f, mono);
+            clip->n += resample_48k_to_16k(mono, FRAME_LEN, clip->pcm + clip->n);
 
             if (votes_left <= 0) {
                 int best = -1; float best_w = 0.0f;
-                for (int i = 0; i < 8; i++)
+                for (int i = 0; i < DIRECTION_COUNT; i++)
                     if (dir_votes[i] > best_w) { best_w = dir_votes[i]; best = i; }
 
                 uint8_t dir_byte; float conf;
@@ -258,7 +226,7 @@ static void capture_task(void *arg)
                     dir_byte = DIR_UNKNOWN;
                     conf = 0.0f;
                 } else {
-                    dir_byte = (uint8_t)best;
+                    dir_byte = direction_to_wire(best);
                     conf = best_w / TDOA_VOTE_FRAMES;
                     if (conf > 1.0f) conf = 1.0f;
                 }
@@ -271,7 +239,8 @@ static void capture_task(void *arg)
         }
 
         // EV_COLLECTING
-        clip->n += resample_48k_to_16k(f.ch[chosen_ch], FRAME_LEN, clip->pcm + clip->n);
+        audio_downmix(&f, mono);
+        clip->n += resample_48k_to_16k(mono, FRAME_LEN, clip->pcm + clip->n);
         if (clip->n >= CLIP_OUT_SAMPLES) {
             clip->event_id = cur_event_id;
             if (xQueueSend(q, clip, 0) != pdTRUE)
@@ -290,7 +259,7 @@ static void capture_task(void *arg)
 // Exercises everything AFTER the microphones exactly as production does:
 // record_event_direction() -> DIR notify -> the same clip queue/ble_task ->
 // chunked AUDIO -> laptop -> CMD -> on_cmd() -> motor. Direction cycles
-// 0..7 so each CMD should buzz the next motor in turn. The clip is a fixed
+// LEFT / RIGHT / BACK so each CMD checks the corresponding motor mask. The clip is a fixed
 // 1 kHz tone at about -20 dBFS (loud enough to pass meit-ai's DB_GATE).
 // Measured 2026-09-23 with the current meit-ai model: this tone is
 // classified "siren" (~0.56 > THRESHOLD 0.4), so the REAL AI path also
@@ -304,10 +273,12 @@ static void fake_event_task(void *arg)
         clip->pcm[i] = (int16_t)(3277.0f * sinf(2.0f * (float)M_PI * 1000.0f * i / AI_FS_HZ));
     clip->n = CLIP_OUT_SAMPLES;
 
-    uint8_t event_id = 0, dir = 0;
+    uint8_t event_id = 0;
+    int index = DIR_LEFT;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(MEIT_FAKE_EVENT_PERIOD_MS));
         if (!ble_svc_connected()) continue;
+        uint8_t dir = direction_to_wire(index);
         record_event_direction(event_id, dir);
         ble_svc_send_direction(event_id, dir, 1.0f, -20.0f);
         clip->event_id = event_id;
@@ -316,7 +287,7 @@ static void fake_event_task(void *arg)
         else
             ESP_LOGI(TAG, "FAKE event %u dir=%u queued", event_id, dir);
         event_id++;
-        dir = (uint8_t)((dir + 1) & 7);
+        index = (index + 1) % DIRECTION_COUNT;
     }
 }
 #endif
@@ -356,13 +327,10 @@ void app_main(void)
     ble_clip = alloc_clip_psram("BLE clip");
     motor_init();
     resample_init();
+#if !MEIT_FAKE_EVENTS
     tdoa_init();
     ESP_ERROR_CHECK(audio_capture_init());
-
-    // Set after measuring with all four mics bundled together (see
-    // tdoa/calibration.py : measure_sync_offsets() / firmware/SYNC_CHECK.md).
-    // This corrects tau, not raw PCM -- see tdoa.c for why.
-    tdoa_set_bus_skew_samples(0);
+#endif
 
     ble_svc_init();
     ble_svc_set_cmd_cb(on_cmd);

@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "config.h"
 
-// 4x DRV8833 -> 8 vibration motors, one LEDC channel per motor.
+// Two DRV8833 A channels -> LEFT and RIGHT vibration motors, one LEDC channel per motor.
 
 typedef struct { uint16_t on_ms; uint16_t off_ms; } motor_step_t;
 
@@ -17,15 +17,21 @@ void motor_all_off(void);
 // Normalized intensity. 1.0f maps to MOTOR_DUTY_CAP.
 void motor_trigger(int idx, float intensity);
 
-// Returns the motor index for TDoA direction 0..7.
-int motor_bit_for_direction(int dir_index);
+// Argument is a BLE wire direction, not a compact vote index.
+static inline uint8_t motor_mask_for_direction(int wire_dir)
+{
+    switch (wire_dir) {
+    case DIR_WIRE_LEFT: return MOTOR_MASK_LEFT;
+    case DIR_WIRE_RIGHT: return MOTOR_MASK_RIGHT;
+    case DIR_WIRE_BACK: return MOTOR_MASK_BOTH;
+    default: return 0;
+    }
+}
 
 // Plays [on_ms, off_ms] steps on all motors selected by motor_mask.
 // intensity_pct is 0..100. A new pattern replaces the active pattern.
 void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
                         const motor_step_t *steps, int n_steps);
 
-// DIR_UNKNOWN alert: sweep the four cardinal motors sequentially
-// (front -> right -> back -> left), one motor at a time, to avoid the
-// 8-motor simultaneous current spike of the old 0xFF fallback.
+// Unresolved status: LEFT then RIGHT, one at a time (distinct from BACK).
 void motor_play_unknown_pattern(uint8_t intensity_pct);

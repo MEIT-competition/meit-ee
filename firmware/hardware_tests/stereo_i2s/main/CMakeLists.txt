@@ -1,7 +1,8 @@
 idf_component_register(
     SRCS
-        "dual_i2s_sync_main.c"
+        "stereo_i2s_main.c"
         "../../../main/audio_capture.c"
+        "../../../main/audio_samples.c"
     INCLUDE_DIRS
         "."
         "../../../main"

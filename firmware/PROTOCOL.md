@@ -13,7 +13,7 @@ meit-ai's `README.md` "출력 포맷" section changes, re-check this file.
 
 ```python
 {
-    "direction": 0,                        # 0-7, 0=front clockwise, -1=unknown
+    "direction": 6,                        # LEFT=6, RIGHT=2, BACK=4, -1=unknown
     "intensity": 85,                       # 40-100
     "pattern": [[100, 50], [100, 0]],       # [[on_ms, off_ms], ...], 1-3 pairs today
     "pattern_name": "siren",
@@ -27,8 +27,8 @@ nothing is sent to the belt in that case.
 ## AUDIO (notify, MCU -> laptop)
 
 16 kHz mono PCM16, little-endian, sent only when the loudness gate is
-exceeded (loudest of the 4 mics, not just FRONT -- see `main.c`'s
-`capture_task`).
+exceeded (loudest of LEFT/RIGHT for the gate). Audio is the average of both
+DC-removed float channels, followed by the existing FIR decimator and PCM16 clipping.
 **Chunked** -- a 2.56 s/40960-sample clip (~80 KB, 342 chunks at the 240-byte
 payload cap) is far larger than one ATT
 notification, so each notify is:
@@ -63,14 +63,14 @@ live BLE pipeline.
 ## DIR (notify, MCU -> laptop)
 
 4 bytes, sent once per event, after a short multi-frame direction vote
-(~125 ms, see `TDOA_VOTE_FRAMES`) and right before the matching AUDIO clip
-starts:
+(~128 ms, see `TDOA_VOTE_FRAMES`), while the matching AUDIO clip is still being
+collected. The full clip is queued for transfer after 2.56 s:
 
 | byte | meaning |
 |---|---|
 | 0 | `event_id` -- the same value tags this event's AUDIO chunks and the CMD response for it |
-| 1 | direction: 0-7, or `0xFF` = unknown (maps to meit-ai's `direction: -1`) |
-| 2 | confidence, `uint8(conf * 255)`. Exactly 0 iff byte 1 is `0xFF`. |
+| 1 | direction: LEFT=6, RIGHT=2, BACK=4, or `0xFF` = unknown (maps to meit-ai's `direction: -1`) |
+| 2 | confidence, `uint8(conf * 255)`. 0 for `0xFF`; 1..255 for a resolved direction. |
 | 3 | RMS loudness in dBFS (of whichever channel was loudest), `int8`, clamped to [-128, 127] |
 
 **Direction-confidence and danger-detection are independent.** Byte 1 can be
@@ -104,29 +104,33 @@ for on-device logging.
 Max size 4 + 2x4 = 12 bytes, fits one ATT packet without MTU negotiation.
 
 If `event_id` doesn't match anything in the MCU's recent-event history
-(evicted, never recorded, or a stale/duplicate write), firmware keeps all
+(evicted or never recorded; a duplicate for an event still in the ring can replay its pattern), firmware keeps all
 motors **OFF** (`mask = 0x00`) as a fail-safe. An invalid stored direction
-(neither `0xFF` nor 0..7) is handled the same way. These are fault/stale-state
+(neither `0xFF` nor one of 6/2/4) is handled the same way. These are fault/stale-state
 cases and must not be conflated with a genuine TDoA `DIR_UNKNOWN` result.
 
 ### Unknown-direction behavior
 
-If DIR reported `0xFF` and a CMD still arrives (danger sound, no resolved
-direction), firmware plays a dedicated four-cardinal sweep instead of the
-old `0xFF` all-motors-on fallback:
+Supported wire values retain their old numeric meanings: LEFT=6, RIGHT=2,
+BACK=4. The other old direction values (0/1/3/5/7) are rejected by the laptop.
+The three compact firmware vote indices are converted through `direction.h`.
+The external meit-ai judge receives the retained wire integers unchanged.
 
-`FRONT (0) -> RIGHT (2) -> BACK (4) -> LEFT (6)`
+| Wire value | Direction | Motor selection |
+|---|---|---|
+| 6 | LEFT | GPIO13 only |
+| 2 | RIGHT | GPIO1 only |
+| 4 | BACK | GPIO13 + GPIO1 together |
 
-Exactly one motor is active at a time. The current fixed sweep timing is
-`UNKNOWN_SWEEP_ON_MS = 80 ms` with `UNKNOWN_SWEEP_OFF_MS = 40 ms` between
-cardinal motors (the final step has no trailing gap). The CMD's `intensity`
-is used for the sweep, while the CMD's normal vibration `pattern` steps are
-not used for this special unknown-direction alert.
+If DIR reported `0xFF` and a CMD arrives, firmware plays LEFT for 80 ms,
+OFF for 40 ms, then RIGHT for 80 ms, using CMD intensity. This dedicated
+unknown alert replaces the normal pattern only for unresolved status.
+It differs from BACK, which uses both motors simultaneously for every ON step
+of the AI-provided pattern. There are exactly three valid directions.
 
-This behavior is implemented in `motor_play_unknown_pattern()` and avoids
-the simultaneous eight-motor current spike of the previous fallback while
-still giving the wearer a distinct "danger detected, direction unresolved"
-alert.
+Two lateral microphones cannot physically distinguish front/back by TDoA alone.
+The prototype excludes FRONT from its operating domain; reliable near-zero delay
+is mapped to BACK. Low confidence is UNKNOWN, not a center-axis estimate.
 
 ## Units
 

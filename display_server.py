@@ -1,3 +1,4 @@
+from laptop.protocol import DIRECTION_NAMES
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,10 +11,13 @@ _HTML = Path(__file__).with_name("display.html")
 
 def show(sound_class=None, direction=-1, intensity=0):
     """판단 결과를 화면에 반영. 알림 없으면 인자 없이 호출."""
+    if direction not in DIRECTION_NAMES:
+        direction = -1
     with _lock:
         _state["seq"] += 1
         _state["sound_class"] = sound_class
         _state["direction"] = direction
+        _state["direction_name"] = DIRECTION_NAMES.get(direction, "UNKNOWN")
         _state["intensity"] = intensity
 
 

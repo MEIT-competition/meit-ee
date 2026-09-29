@@ -47,29 +47,28 @@
   <div id="sub"></div>
 
 <script>
-const ACTIVE = [2, 6];       
-
-const NAMES = ["앞","오른쪽 앞","오른쪽","오른쪽 뒤","뒤","왼쪽 뒤","왼쪽","왼쪽 앞"];
+const ACTIVE = ["LEFT", "RIGHT"];
+const NAMES = {LEFT: "왼쪽", RIGHT: "오른쪽", BACK: "뒤"};
 const CLASS_KR = { horn: "경적", siren: "사이렌", crash: "충돌음" };
 const COLOR = { horn: "#ffb020", siren: "#ff4d4d", crash: "#ff7a2f" };
 
 function resolve(direction) {
-  if (direction === 2) return { dots: [2], text: "오른쪽" };
-  if (direction === 6) return { dots: [6], text: "왼쪽" };
-  return { dots: [2, 6], text: "뒤" };
+  if (direction === "LEFT") return { dots: ["LEFT"], text: NAMES.LEFT };
+  if (direction === "RIGHT") return { dots: ["RIGHT"], text: NAMES.RIGHT };
+  if (direction === "BACK") return { dots: ACTIVE, text: NAMES.BACK };
+  return { dots: [], text: "방향 판별 불가" };
 }
 
 const belt = document.getElementById("belt");
 const dots = {};
-ACTIVE.forEach(i => {
-  const a = (i / 8) * 2 * Math.PI - Math.PI / 2;
+ACTIVE.forEach(name => {
   const el = document.createElement("div");
   el.className = "dot";
-  el.textContent = NAMES[i];
-  el.style.left = (50 + 50 * Math.cos(a)) + "%";
-  el.style.top  = (50 + 50 * Math.sin(a)) + "%";
+  el.textContent = NAMES[name];
+  el.style.left = name === "LEFT" ? "0%" : "100%";
+  el.style.top = "50%";
   belt.appendChild(el);
-  dots[i] = el;
+  dots[name] = el;
 });
 
 const label = document.getElementById("label");
@@ -103,7 +102,7 @@ function render(s) {
   document.documentElement.style.setProperty(
     "--accent", COLOR[s.sound_class] || "#ff4d4d");
 
-  const r = resolve(s.direction);
+  const r = resolve(s.direction_name);
   r.dots.forEach(i => { if (dots[i]) dots[i].classList.add("on"); });
 
   label.textContent = CLASS_KR[s.sound_class] || s.sound_class;

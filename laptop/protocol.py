@@ -13,10 +13,9 @@ DIR_UUID     = "03000000-1d9e-218f-9a4b-9c4e302a9d11"
 CMD_UUID     = "04000000-1d9e-218f-9a4b-9c4e302a9d11"
 
 DIR_UNKNOWN = 0xFF
-DIRECTION_NAMES = [
-    "FRONT", "FRONT_RIGHT", "RIGHT", "BACK_RIGHT",
-    "BACK", "BACK_LEFT", "LEFT", "FRONT_LEFT",
-]
+# Same wire values as firmware/main/direction.h; checked by regression tests.
+DIR_LEFT, DIR_RIGHT, DIR_BACK = 6, 2, 4
+DIRECTION_NAMES = {DIR_LEFT: "LEFT", DIR_RIGHT: "RIGHT", DIR_BACK: "BACK"}
 
 SOUND_CLASS_TO_ID = {"horn": 0, "siren": 1, "crash": 2}
 SOUND_ID_TO_CLASS = {v: k for k, v in SOUND_CLASS_TO_ID.items()}
@@ -47,7 +46,7 @@ def decode_dir_packet(data: bytes) -> DirPacket:
         raise ValueError(f"DIR packet must be exactly 4 bytes, got {len(data)}")
     event_id = data[0]
     raw_dir = data[1]
-    if raw_dir != DIR_UNKNOWN and not 0 <= raw_dir <= 7:
+    if raw_dir != DIR_UNKNOWN and raw_dir not in DIRECTION_NAMES:
         raise ValueError(f"invalid direction byte: {raw_dir}")
     direction = -1 if raw_dir == DIR_UNKNOWN else raw_dir
     confidence = data[2] / 255.0
@@ -159,6 +158,6 @@ def decode_cmd_packet(data: bytes) -> dict:
 def direction_name(direction: int) -> str:
     if direction == -1:
         return "UNKNOWN"
-    if not 0 <= direction <= 7:
-        raise ValueError("direction must be -1 or 0..7")
+    if direction not in DIRECTION_NAMES:
+        raise ValueError("direction must be -1, LEFT=6, RIGHT=2 or BACK=4")
     return DIRECTION_NAMES[direction]

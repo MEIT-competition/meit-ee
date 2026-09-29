@@ -1,10 +1,3 @@
-// C port of tdoa/gcc_phat.py + tdoa/direction_4mic.py, using esp-dsp.
-// Differences from Python, all deliberate:
-//   * no 16x zero-pad upsampling. At 48 kHz, max lag is ~22 samples for a
-//     16 cm spacing, which already gives ~3 deg worst-case quantisation for
-//     an 8-way decision. Parabolic interpolation covers the rest.
-//   * float32 instead of float64.
-
 #include <math.h>
 #include <string.h>
 #include "esp_dsp.h"
@@ -12,7 +5,6 @@
 
 static float wind[FRAME_LEN];
 static __attribute__((aligned(16))) float A[FFT_N * 2], B[FFT_N * 2];
-static int bus_skew_samples = 0;
 
 // These were local to tdoa_gcc_phat() before -- 3 * (FFT_N/2+1) floats =
 // ~12.3 KB, against capture_task's 8 KB task stack (see main.c). A single
@@ -26,11 +18,6 @@ void tdoa_init(void)
     dsps_fft2r_init_fc32(NULL, FFT_N);
     dsps_wind_hann_f32(wind, FRAME_LEN);
 }
-
-// Set from measure_sync_offsets() in tdoa/calibration.py -- see
-// firmware/SYNC_CHECK.md. Replaces the old audio_capture_set_sync_offset(),
-// which shifted raw PCM; this corrects the tau instead (see tdoa_estimate).
-void tdoa_set_bus_skew_samples(int samples) { bus_skew_samples = samples; }
 
 static void fwd(const float *x, float *buf)
 {
@@ -80,9 +67,7 @@ float tdoa_gcc_phat(const float *sig, const float *ref, int len,
     //   IFFT(X)[n] = (1/N) * Re( FFT(conj(X))[n] )
     // Calling dsps_fft2r_fc32() again on X directly (the old code) computes
     // Y[n] = FFT(X)[n] = N * IFFT(X)[(-n) mod N] -- i.e. the correct
-    // correlation, but circularly TIME-REVERSED. Because both tau_lr and
-    // tau_fb go through this same path, both flip sign identically, which
-    // rotates every direction estimate by exactly 180 degrees. Verified by
+    // correlation, but circularly TIME-REVERSED. Omitting conjugation reverses the LEFT/RIGHT delay sign. Verified by
     // reproducing this exact sequence in Python: a true +5 sample delay
     // came back as -5 without the conjugate step below, and correctly as
     // +5 with it (checked against +5,-7,0,+15).
@@ -122,44 +107,30 @@ float tdoa_gcc_phat(const float *sig, const float *ref, int len,
     return shift / (float)TDOA_FS_HZ;
 }
 
+int tdoa_direction_from_delay(float delay_samples)
+{
+    if (!isfinite(delay_samples)) return -1;
+    if (delay_samples < -TDOA_THRESHOLD_SAMPLES) return DIR_LEFT;
+    if (delay_samples > TDOA_THRESHOLD_SAMPLES) return DIR_RIGHT;
+    return DIR_BACK;
+}
+
 void tdoa_estimate(const audio_frame_t *f, direction_t *out)
 {
-    const float d = 2.0f * MIC_RADIUS_M;
-    const float max_tau = TAU_MARGIN * d / SPEED_OF_SOUND;
-    float c1, c2;
-
-    // tau>0 => LEFT later than RIGHT => source to the RIGHT
-    float tau_lr = tdoa_gcc_phat(f->ch[CH_LEFT], f->ch[CH_RIGHT], FRAME_LEN, max_tau, &c1);
-    // tau>0 => BACK later than FRONT => source to the FRONT
-    float tau_fb = tdoa_gcc_phat(f->ch[CH_BACK], f->ch[CH_FRONT], FRAME_LEN, max_tau, &c2);
-
-    // Correct for the constant bus-A/bus-B skew in the tau domain instead of
-    // shifting raw PCM. Shifting PCM with edge-clamping (the old approach)
-    // duplicates a boundary sample and injects an artificial discontinuity
-    // right where GCC-PHAT looks; subtracting a known constant from tau
-    // has no such side effect. LEFT and BACK are both bus B, RIGHT and
-    // FRONT are both bus A, so the same skew applies to both pairs with the
-    // same sign (see tdoa_set_bus_skew_samples()).
-    float skew_s = bus_skew_samples / (float)TDOA_FS_HZ;
-    tau_lr -= skew_s;
-    tau_fb -= skew_s;
-
-    float norm = d / SPEED_OF_SOUND;
-    float vx = tau_lr / norm, vy = tau_fb / norm;
-    float ang = atan2f(vx, vy) * 180.0f / (float)M_PI;
-    if (ang < 0) ang += 360.0f;
-
-    float loud_dbfs = f->rms_dbfs[0];
-    for (int c = 1; c < NUM_MICS; c++)
-        if (f->rms_dbfs[c] > loud_dbfs) loud_dbfs = f->rms_dbfs[c];
-
-    out->angle_deg  = ang;
-    out->index      = ((int)((ang + 22.5f) / 45.0f)) & 7;
-    out->confidence = (c1 < c2 ? c1 : c2);
-    out->conf_lr    = c1;
-    out->conf_fb    = c2;
-    out->tau_lr_s   = tau_lr;
-    out->tau_fb_s   = tau_fb;
-    if (loud_dbfs < RMS_GATE_DBFS || out->confidence < MIN_CONFIDENCE)
-        out->confidence = 0.0f;             // report "unknown", stay silent
+    const float max_tau = TAU_MARGIN * MIC_SPACING_M / SPEED_OF_SOUND;
+    float conf;
+    float tau = tdoa_gcc_phat(f->ch[CH_LEFT], f->ch[CH_RIGHT], FRAME_LEN,
+                              max_tau, &conf);
+    tau -= TDOA_LR_BIAS_SAMPLES / (float)TDOA_FS_HZ;
+    out->tau_lr_s = tau;
+    out->conf_lr = conf;
+    out->confidence = conf;
+    out->index = tdoa_direction_from_delay(tau * TDOA_FS_HZ);
+    float loud = fmaxf(f->rms_dbfs[CH_LEFT], f->rms_dbfs[CH_RIGHT]);
+    // BACK describes a valid center-axis estimate only. Silence/failure is UNKNOWN.
+    if (loud < RMS_GATE_DBFS || !isfinite(conf) || conf < MIN_CONFIDENCE ||
+        out->index < 0) {
+        out->confidence = 0.0f;
+        out->index = -1;
+    }
 }

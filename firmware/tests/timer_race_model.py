@@ -30,7 +30,7 @@
 #         races -- these reproduce deterministically, every time):
 #   D1. Replacing an active pattern left the OLD pattern's motor(s) running
 #       forever, because the redesign's handle_play() dropped the
-#       apply_mask(0xFF,0) the pre-redesign code had.
+#       apply_mask(0x03,0) the pre-redesign code had.
 #   D2. (sanity check) a pattern finishing normally still turns everything
 #       off correctly -- confirms D1's fix didn't break the ordinary path.
 #   D3. A schedule() failure immediately after turning a motor ON left it
@@ -440,7 +440,7 @@ def run_new_design(initial_queue_order):
                                    f"{drained} before installing pattern B")
                     timer_armed = False
             # handle_play(): clear ALL previous outputs, then install B.
-            log.append(f"[t={t}] seq_task: apply_mask(0xFF,0) -- old "
+            log.append(f"[t={t}] seq_task: apply_mask(0x03,0) -- old "
                        f"pattern's channel forced off")
             pattern_b_on_at = t
             timer_armed = True
@@ -478,13 +478,13 @@ print()
 #   D4 (from Part C, now split into two explicit cases per review):
 #       PLAY-before-TICK and TICK-before-PLAY orderings, tested separately.
 
-MOTOR_A = 0b00000010   # e.g. "right" motor, bit 1
-MOTOR_B = 0b00000100   # e.g. "left" motor,  bit 2
+MOTOR_A = 0b10   # RIGHT motor, bit 1
+MOTOR_B = 0b01   # LEFT motor, bit 0
 
 class Seq:
     """Mirrors motor.c's motor_seq_task-owned state and its two entry
     points, advance_step() and handle_play(), including the two fixes:
-    the apply_mask(0xFF,0) clear in handle_play(), and the fail-safe in
+    the apply_mask(0x03,0) clear in handle_play(), and the fail-safe in
     advance_step() when schedule() fails."""
     def __init__(self):
         self.outputs = 0            # bitmask of channels currently driven
@@ -502,7 +502,7 @@ class Seq:
         if duty > 0:
             self.outputs |= mask
         else:
-            self.outputs &= ~mask & 0xFF
+            self.outputs &= ~mask & 0x03
 
     def schedule(self, ms):
         if self.force_schedule_fail_once:
@@ -514,7 +514,7 @@ class Seq:
         return True
 
     def force_all_off_and_reset(self):
-        self.apply_mask(0xFF, 0)
+        self.apply_mask(0x03, 0)
         self.step_is_on = False
         self.step_count = 0
         self.step_idx = 0
@@ -546,8 +546,8 @@ class Seq:
             # by the time we reach this point in these scenarios)
             self.timer_armed = False
         # THE FIX under test:
-        self.apply_mask(0xFF, 0)
-        self.log.append("handle_play(): apply_mask(0xFF,0) -- all previous "
+        self.apply_mask(0x03, 0)
+        self.log.append("handle_play(): apply_mask(0x03,0) -- all previous "
                         "channels forced off before installing new pattern")
         self.steps = steps
         self.step_count = len(steps)
@@ -615,7 +615,7 @@ print("ALL PASS" if all(results) else "SOME FAILED")
 
 print()
 print("="*70)
-print("Same tests against the PRE-FIX logic (no apply_mask(0xFF,0) in")
+print("Same tests against the PRE-FIX logic (no apply_mask(0x03,0) in")
 print("handle_play, no fail-safe in advance_step) -- for contrast")
 print("="*70)
 
@@ -648,7 +648,7 @@ class SeqBuggy(Seq):
     def handle_play(self, mask, duty, steps):
         if self.timer_armed:
             self.timer_armed = False
-        # pre-fix: NO apply_mask(0xFF, 0) here
+        # pre-fix: NO apply_mask(0x03, 0) here
         self.steps = steps
         self.step_count = len(steps)
         self.step_idx = 0

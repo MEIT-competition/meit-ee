@@ -26,9 +26,9 @@
 //                  hardware before treating end-to-end latency as solved.
 //
 //   DIR   notify : 4 bytes {event_id, dir_byte, confidence_q8, rms_dbfs_i8}
-//                  dir_byte is 0..7, or DIR_UNKNOWN (0xFF) for "-1 판별 불가"
+//                  dir_byte is LEFT=6, RIGHT=2, BACK=4, or DIR_UNKNOWN (0xFF) for "-1 판별 불가"
 //                  -- confidence_q8 will be 0 exactly when dir_byte is
-//                  DIR_UNKNOWN, never a fabricated 0..7 index. Sent once per
+//                  DIR_UNKNOWN, never a fabricated direction. Sent once per
 //                  event, after main.c's multi-frame direction vote
 //                  completes (not on the very first frame -- see
 //                  TDOA_VOTE_FRAMES in config.h).
