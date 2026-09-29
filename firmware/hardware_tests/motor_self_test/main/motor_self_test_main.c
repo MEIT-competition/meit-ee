@@ -26,7 +26,7 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_MEIT_MOTOR_TEST_GAP_MS));
     }
 
-    ESP_LOGI(TAG, "BACK: LEFT + RIGHT together");
+    ESP_LOGI(TAG, "CENTER: LEFT + RIGHT together");
     motor_trigger(MOTOR_LEFT, intensity);
     motor_trigger(MOTOR_RIGHT, intensity);
     vTaskDelay(pdMS_TO_TICKS(CONFIG_MEIT_MOTOR_TEST_ON_MS));

@@ -1,169 +1,134 @@
+"""MEIT EE laptop <-> belt BLE command protocol.
+
+The iPhone/Windows bridge owns microphone capture, direction estimation and AI.
+The ESP32 belt is intentionally a *motor-only* BLE peripheral.
+"""
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
-import struct
+from typing import List, Sequence
 
 DEVICE_NAME = "MEIT-BELT"
-
-# Canonical strings corresponding to the current firmware BLE_UUID128_INIT
-# byte arrays. Verify once on real hardware by listing GATT services.
 SERVICE_UUID = "01000000-1d9e-218f-9a4b-9c4e302a9d11"
-AUDIO_UUID   = "02000000-1d9e-218f-9a4b-9c4e302a9d11"
-DIR_UUID     = "03000000-1d9e-218f-9a4b-9c4e302a9d11"
-CMD_UUID     = "04000000-1d9e-218f-9a4b-9c4e302a9d11"
+CMD_UUID = "04000000-1d9e-218f-9a4b-9c4e302a9d11"
 
-DIR_UNKNOWN = 0xFF
-# Same wire values as firmware/main/direction.h; checked by regression tests.
-DIR_LEFT, DIR_RIGHT, DIR_BACK = 6, 2, 4
-DIRECTION_NAMES = {DIR_LEFT: "LEFT", DIR_RIGHT: "RIGHT", DIR_BACK: "BACK"}
+CMD_MAGIC = 0xA5
+CMD_VERSION = 0x02
 
-# AUDIO contract (firmware/main/config.h CLIP_OUT_SAMPLES): 16 kHz mono
-# PCM16 LE, exactly 40960 samples = 81920 bytes = 2.56 s per event.
-AUDIO_SAMPLE_RATE = 16000
-AUDIO_CLIP_SAMPLES = 40960
-AUDIO_CLIP_BYTES = AUDIO_CLIP_SAMPLES * 2
+DIR_STOP = 0
+DIR_LEFT = 1
+DIR_CENTER = 2
+DIR_RIGHT = 3
+DIRECTION_NAMES = {
+    DIR_STOP: "STOP",
+    DIR_LEFT: "LEFT",
+    DIR_CENTER: "CENTER",
+    DIR_RIGHT: "RIGHT",
+}
 
-SOUND_CLASS_TO_ID ={"horn": 0, "siren": 1, "crash": 2}
-SOUND_ID_TO_CLASS = {v: k for k, v in SOUND_CLASS_TO_ID.items()}
-SOUND_CLASS_NONE = 0xFF
+# Kept intentionally small enough for a normal BLE write without fragmentation.
+PATTERN_MAX_PAIRS = 4
+
 
 @dataclass(frozen=True)
-class DirPacket:
-    event_id: int
+class MotorCommand:
+    sequence: int
     direction: int
-    confidence: float
-    rms_dbfs: int
+    intensity: int
+    pattern: Sequence[Sequence[int]]
 
-@dataclass(frozen=True)
-class AudioChunk:
-    event_id: int
-    chunk_index: int
-    last: bool
-    pcm_bytes: bytes
 
-@dataclass(frozen=True)
-class CompletedAudio:
-    event_id: int
-    pcm_bytes: bytes
-    lost: bool
+def normalize_direction(value: object) -> int:
+    """Normalize iOS bridge direction strings to the 3-motor-direction contract.
 
-def decode_dir_packet(data: bytes) -> DirPacket:
-    if len(data) != 4:
-        raise ValueError(f"DIR packet must be exactly 4 bytes, got {len(data)}")
-    event_id = data[0]
-    raw_dir = data[1]
-    if raw_dir != DIR_UNKNOWN and raw_dir not in DIRECTION_NAMES:
-        raise ValueError(f"invalid direction byte: {raw_dir}")
-    direction = -1 if raw_dir == DIR_UNKNOWN else raw_dir
-    confidence = data[2] / 255.0
-    rms_dbfs = struct.unpack("<b", data[3:4])[0]
-    if direction == -1 and data[2] != 0:
-        raise ValueError("DIR_UNKNOWN must carry confidence byte 0")
-    return DirPacket(event_id, direction, confidence, rms_dbfs)
+    Current iOS main can report front/right/back/left/unknown.  The planned
+    3-way estimator can report left/center/right.  The belt therefore accepts
+    both without requiring an iOS change.
 
-def decode_audio_chunk(data: bytes) -> AudioChunk:
-    if len(data) < 3:
-        raise ValueError(f"AUDIO chunk must be at least 3 bytes, got {len(data)}")
-    pcm = bytes(data[3:])
-    if len(pcm) % 2:
-        raise ValueError("PCM16 payload must contain an even number of bytes")
-    return AudioChunk(
-        event_id=data[0],
-        chunk_index=data[1],
-        last=bool(data[2] & 0x01),
-        pcm_bytes=pcm,
-    )
+    FRONT and BACK intentionally collapse to CENTER because the wearable has
+    only LEFT/RIGHT actuators and the product requirement is 3-way feedback.
+    """
+    if value is None:
+        return DIR_STOP
+    s = str(value).strip().lower()
+    if s == "left":
+        return DIR_LEFT
+    if s == "right":
+        return DIR_RIGHT
+    if s in {"center", "centre", "front", "back"}:
+        return DIR_CENTER
+    return DIR_STOP
 
-class AudioAssembler:
-    def __init__(self) -> None:
-        self._events: Dict[int, dict] = {}
 
-    def reset_event(self, event_id: int) -> None:
-        self._events.pop(event_id, None)
+def direction_name(direction: int) -> str:
+    try:
+        return DIRECTION_NAMES[direction]
+    except KeyError as exc:
+        raise ValueError(f"invalid direction: {direction}") from exc
 
-    def push(self, chunk: AudioChunk) -> Optional[CompletedAudio]:
-        st = self._events.get(chunk.event_id)
-        if st is None:
-            st = {"expected": 0, "parts": [], "lost": False}
-            self._events[chunk.event_id] = st
 
-        if chunk.chunk_index != st["expected"]:
-            st["lost"] = True
+def encode_motor_cmd(sequence: int, direction: int, intensity: int,
+                     pattern: Sequence[Sequence[int]]) -> bytes:
+    """Encode BLE CMD v2.
 
-        st["parts"].append(chunk.pcm_bytes)
-        st["expected"] = (chunk.chunk_index + 1) & 0xFF
-
-        if not chunk.last:
-            return None
-
-        out = CompletedAudio(
-            event_id=chunk.event_id,
-            pcm_bytes=b"".join(st["parts"]),
-            lost=bool(st["lost"]),
-        )
-        self.reset_event(chunk.event_id)
-        return out
-
-def pcm16le_to_float32(pcm_bytes: bytes):
-    import numpy as np
-    if len(pcm_bytes) % 2:
-        raise ValueError("PCM16 byte length must be even")
-    return np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32) / 32768.0
-
-def _sound_class_id(sound_class) -> int:
-    if isinstance(sound_class, int):
-        if sound_class in (0, 1, 2, SOUND_CLASS_NONE):
-            return sound_class
-        raise ValueError(f"invalid sound_class id: {sound_class}")
-    if str(sound_class) not in SOUND_CLASS_TO_ID:
-        raise ValueError(f"unknown sound_class: {sound_class!r}")
-    return SOUND_CLASS_TO_ID[str(sound_class)]
-
-def encode_cmd(event_id: int, intensity: int, sound_class,
-               pattern: Sequence[Sequence[int]]) -> bytes:
-    if not 0 <= event_id <= 255:
-        raise ValueError("event_id must fit uint8")
+    Wire format:
+      [0] magic      = 0xA5
+      [1] version    = 0x02
+      [2] sequence   = uint8 trace/correlation value
+      [3] direction  = 0 STOP, 1 LEFT, 2 CENTER, 3 RIGHT
+      [4] intensity  = 0..100 percent
+      [5] n_pairs    = 0..4 (0 is valid only for STOP)
+      then n x {on_ms/10, off_ms/10}
+    """
+    if not 0 <= sequence <= 255:
+        raise ValueError("sequence must fit uint8")
+    if direction not in DIRECTION_NAMES:
+        raise ValueError("direction must be STOP/LEFT/CENTER/RIGHT")
     if not 0 <= intensity <= 100:
         raise ValueError("intensity must be 0..100")
-    if not 1 <= len(pattern) <= 4:
-        raise ValueError("pattern must contain 1..4 pairs")
 
-    out = bytearray([event_id, intensity, _sound_class_id(sound_class), len(pattern)])
+    if direction == DIR_STOP:
+        if pattern:
+            raise ValueError("STOP command must not include a pattern")
+        return bytes([CMD_MAGIC, CMD_VERSION, sequence, DIR_STOP, 0, 0])
+
+    if not 1 <= len(pattern) <= PATTERN_MAX_PAIRS:
+        raise ValueError(f"pattern must contain 1..{PATTERN_MAX_PAIRS} pairs")
+
+    out = bytearray([CMD_MAGIC, CMD_VERSION, sequence, direction, intensity, len(pattern)])
     for pair in pattern:
         if len(pair) != 2:
             raise ValueError("each pattern entry must be [on_ms, off_ms]")
         on_ms, off_ms = int(pair[0]), int(pair[1])
-        if on_ms < 0 or off_ms < 0:
-            raise ValueError("pattern times must be non-negative")
+        if on_ms < 10 or off_ms < 0:
+            raise ValueError("on_ms must be >=10 and off_ms must be >=0")
         if on_ms % 10 or off_ms % 10:
             raise ValueError("pattern times must be multiples of 10 ms")
         if on_ms > 2550 or off_ms > 2550:
-            raise ValueError("pattern time exceeds uint8*10 ms limit")
-        out.append(on_ms // 10)
-        out.append(off_ms // 10)
+            raise ValueError("pattern time exceeds 2550 ms")
+        out.extend((on_ms // 10, off_ms // 10))
     return bytes(out)
 
-def decode_cmd_packet(data: bytes) -> dict:
+
+def decode_motor_cmd(data: bytes) -> MotorCommand:
     if len(data) < 6:
         raise ValueError("CMD packet too short")
-    event_id, intensity, sound_id, n_pairs = data[:4]
-    expected = 4 + 2 * n_pairs
-    if not 1 <= n_pairs <= 4 or len(data) != expected:
-        raise ValueError("invalid CMD n_pairs/length")
+    magic, version, sequence, direction, intensity, n_pairs = data[:6]
+    if magic != CMD_MAGIC or version != CMD_VERSION:
+        raise ValueError("invalid CMD magic/version")
+    if direction not in DIRECTION_NAMES:
+        raise ValueError("invalid direction")
+    if intensity > 100:
+        raise ValueError("invalid intensity")
+    if n_pairs > PATTERN_MAX_PAIRS or len(data) != 6 + 2 * n_pairs:
+        raise ValueError("invalid pattern length")
+    if direction == DIR_STOP:
+        if intensity != 0 or n_pairs != 0:
+            raise ValueError("STOP must have zero intensity and zero pattern pairs")
+    elif n_pairs == 0:
+        raise ValueError("motor command requires at least one pattern pair")
+
     pattern: List[List[int]] = []
     for i in range(n_pairs):
-        pattern.append([data[4 + 2*i] * 10, data[5 + 2*i] * 10])
-    return {
-        "event_id": event_id,
-        "intensity": intensity,
-        "sound_class_id": sound_id,
-        "sound_class": SOUND_ID_TO_CLASS.get(sound_id, "none"),
-        "pattern": pattern,
-    }
-
-def direction_name(direction: int) -> str:
-    if direction == -1:
-        return "UNKNOWN"
-    if direction not in DIRECTION_NAMES:
-        raise ValueError("direction must be -1, LEFT=6, RIGHT=2 or BACK=4")
-    return DIRECTION_NAMES[direction]
+        pattern.append([data[6 + 2*i] * 10, data[7 + 2*i] * 10])
+    return MotorCommand(sequence, direction, intensity, pattern)

@@ -1,10 +1,2 @@
 dependencies:
-  espressif/esp-dsp: "^1.4.0"
-  # Pinned to the 5.2.x line, not just ">=5.1" -- the I2S driver's
-  # component name and some APIs have moved around across ESP-IDF
-  # versions (5.1.x documents it under `driver`; later versions split it
-  # into `esp_driver_i2s`). This project's main/CMakeLists.txt REQUIRES
-  # `driver` directly, which matches 5.2.x. Debugging a toolchain/API
-  # mismatch on top of everything else is not worth it on a 5-day
-  # schedule -- the whole team should install the same 5.2.x release.
   idf: ">=5.2,<5.3"

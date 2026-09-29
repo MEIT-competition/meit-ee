@@ -1,9 +1,26 @@
-# Historical reference only
+# Legacy / reference only
 
-`four_mic/*.py.txt` preserves the uncalled four-microphone algorithm,
-dual-bus calibration and synthetic tests. No production CMake target,
-laptop import or current test imports these text files. Current tools are
-`tdoa/direction_2mic.py`, `tdoa/calibration.py` and `tdoa/test_synthetic.py`.
+Everything in this directory belongs to previous MEIT EE prototypes and is **not part of the current runtime build**.
 
-Old wiring drawings 01..06 in `docs/hardware/schematics/` and
-`mic_bringup_log.txt` describe the retired hardware, not the current pin map.
+Archived material includes:
+
+- ESP32 microphone capture / stereo I2S
+- GCC-PHAT / TDoA direction estimation
+- BLE audio streaming to the laptop
+- old laptop BLE receiver and AI bridge
+- old firmware host tests and microphone bring-up tools
+- four-microphone / eight-motor schematics
+- previous browser display/debug UI
+
+Current runtime:
+
+```text
+iPhone(s)
+-> meit-ios Windows bridge + meit-ai
+-> laptop/ios_motor_bridge.py
+-> BLE CMD v2
+-> ESP32
+-> two vibration motors
+```
+
+Do not import, build, or run legacy code together with the current runtime unless you are intentionally reproducing an older prototype.

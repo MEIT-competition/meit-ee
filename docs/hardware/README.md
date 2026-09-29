@@ -1,62 +1,37 @@
-# MEIT current hardware
+# Current hardware — 2-motor belt
 
-Current: INMP441 ×2 → single I2S stereo → LEFT / RIGHT / BACK → vibration motor ×2.
-Board: LOLIN S3 V1.0.0, ESP32-S3, 16 MB QSPI flash, 8 MB OPI PSRAM.
+This document describes the **active** hardware path only. The old INMP441 / TDoA / 8-motor materials are under `legacy/` and are not part of the runtime build.
 
-| Part | Active quantity | Use |
-|---|---:|---|
-| INMP441 | 2 | Laterally spaced LEFT / RIGHT |
-| DRV8833 | 2 | Each board uses A channel only |
-| ERM vibration motor | 2 | LEFT / RIGHT |
+## Active signal path
 
 ```text
-GPIO5 BCLK → both microphones SCK
-GPIO6 WS   → both microphones WS
-GPIO7 DIN  ← both microphones SD
-LEFT L/R=GND; RIGHT L/R=3.3V
-
-GPIO21 → LEFT driver AIN1;  LEFT AIN2=GND
-GPIO13 → RIGHT driver AIN1; RIGHT AIN2=GND
-Each motor → its driver's AOUT1/2; SLP=3V3
+Windows laptop BLE -> ESP32-S3 -> DRV8833 -> LEFT / RIGHT vibration motors
 ```
 
-LEFT activates the LEFT motor, RIGHT activates the RIGHT motor, BACK activates both
-together. UNKNOWN is an alternating LEFT/RIGHT alert after AI confirms danger.
-No dedicated BACK motor is used. GPIO15/16/17 are unused.
+The iPhone side and Windows `meit-ios` bridge perform audio collection, direction selection and AI inference. The ESP32 does not sample microphones and does not estimate direction.
 
-Two laterally spaced microphones cannot physically distinguish front/back using
-TDoA alone. FRONT is excluded from the operating domain; near-zero reliable
-inter-microphone delay is mapped to BACK. This is an operating policy.
+## GPIO
 
-## Power and optional peripherals
+| Function | GPIO | Current use |
+|---|---:|---|
+| LEFT motor PWM | 21 | LEFT DRV8833 AIN1 |
+| RIGHT motor PWM | 13 | RIGHT DRV8833 AIN1 |
+| DRV8833 AIN2 | — | GND for the current one-direction drive scheme |
+| DRV8833 nSLEEP | — | 3V3 when `MOTOR_SLEEP_GPIO=-1` |
 
-ESP32 uses USB-C. The previously recorded motor supply is a separate 4×AA pack,
-with pack positive to driver VM and common ground with ESP32. Do not connect pack
-positive to ESP32 3V3/5V. The latest hardware request did not specify a new rail.
-`MOTOR_SUPPLY_MV=4200` remains the old provisional value; confirm cell chemistry,
-maximum pack voltage and motor rating before calibrating PWM duty.
+Both motor-driver grounds and ESP32 ground must be common.
 
-IMU SDA/SCL=42/41 and SD SCK/MOSI/MISO=12/14/18 remain reserved and unimplemented.
-SD CS is unassigned because the previously reserved GPIO21 is now the verified LEFT
-motor input. Assign a non-conflicting CS pin only when SD logging is implemented.
-See [PINMAP](../../firmware/PINMAP.md) for pin exclusions and [README](../../README.md)
-for build, BLE and bring-up commands.
+## Direction to motor behavior
 
-## Historical drawings
+| Direction command | LEFT motor | RIGHT motor |
+|---|---|---|
+| `LEFT` | ON | OFF |
+| `CENTER` | ON | ON |
+| `RIGHT` | OFF | ON |
+| `STOP` / unknown | OFF | OFF |
 
-The existing `schematics/01-*` through `schematics/06-*` PNG files depict the
-**retired four-microphone / eight-motor design**. They are retained as historical
-assets, not current wiring instructions. They are intentionally not embedded as
-the current circuit. Optional module drawings 07/08 remain reference material.
-`../../mic_bringup_log.txt` is likewise an old capture, not validation of this build.
+## Electrical note
 
-## Remaining measurements
+`firmware/main/config.h` contains the assumed motor supply voltage and nominal motor voltage used to cap PWM duty. These values are a software guard, **not** a substitute for verifying the real battery pack, motor rating, driver wiring, current draw and temperature.
 
-Verify L/R strap-to-slot mapping, microphone-side clocks/data and worn TDoA
-threshold; production-PWM minimum startup duty, VM sag/brownout/driver temperature;
-and BLE/AI latency. The direct HIGH/LOW hardware test has already verified LEFT
-GPIO21, RIGHT GPIO13 and both motors together with the stated two-DRV8833 wiring;
-the production LEDC pattern and full BLE end-to-end path still need board validation.
-Host tests/build success are not evidence that these physical checks passed.
-
-INMP441 timing/channel reference: [TDK datasheet](https://product.tdk.com/system/files/dam/doc/product/sw_piezo/mic/mems-mic/data_sheet/inmp441.pdf).
+Before increasing intensity, confirm the actual supply and motor specifications on the physical unit.

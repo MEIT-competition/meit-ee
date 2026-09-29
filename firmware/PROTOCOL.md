@@ -1,183 +1,68 @@
-# BLE protocol contract with meit-ai
+# MEIT EE BLE protocol — CMD v2
 
-This is the single source of truth for the byte layout. Both repos should
-link here; there is no shared code between them, so this file is the only
-thing keeping them in sync. If either side changes, update this file in the
-same commit.
+Current data path:
 
-Checked against meit-ai as of the `main.py` / `decision/judge.py` /
-`classifier/adapter.py` snapshot reviewed on the electronics side. If
-meit-ai's `README.md` "출력 포맷" section changes, re-check this file.
-
-## meit-ai's actual output (decision/judge.py)
-
-```python
-{
-    "direction": 6,                        # LEFT=6, RIGHT=2, BACK=4, -1=unknown
-    "intensity": 85,                       # 40-100
-    "pattern": [[100, 50], [100, 0]],       # [[on_ms, off_ms], ...], 1-3 pairs today
-    "pattern_name": "siren",
-    "sound_class": "siren",                # one of horn/siren/crash (never "normal")
-    "confidence": 0.949,
-}
+```text
+iPhone(s) -> meit-ios Windows bridge + meit-ai
+           -> laptop/ios_motor_bridge.py
+           -> BLE
+           -> ESP32-S3
+           -> LEFT / RIGHT vibration motors
 ```
-`judge()` returns `None` for normal sound or below `THRESHOLD`/`DB_GATE` --
-nothing is sent to the belt in that case.
 
-## AUDIO (notify, MCU -> laptop)
+The ESP32 no longer captures microphone audio or estimates direction.
 
-16 kHz mono PCM16, little-endian, sent only when the loudness gate is
-exceeded (loudest of LEFT/RIGHT for the gate). Audio is the average of both
-DC-removed float channels, followed by the existing FIR decimator and PCM16 clipping.
-**Chunked** -- a 2.56 s/40960-sample clip (~80 KB, 342 chunks at the 240-byte
-payload cap) is far larger than one ATT
-notification, so each notify is:
+## BLE identity
 
-| byte | meaning |
+- Device name: `MEIT-BELT`
+- Service UUID: `01000000-1d9e-218f-9a4b-9c4e302a9d11`
+- CMD characteristic UUID: `04000000-1d9e-218f-9a4b-9c4e302a9d11`
+- characteristic access: write
+
+## CMD v2 packet
+
+| Byte | Field | Value |
+|---:|---|---|
+| 0 | magic | `0xA5` |
+| 1 | version | `0x02` |
+| 2 | sequence | uint8 trace value |
+| 3 | direction | `0=STOP`, `1=LEFT`, `2=CENTER`, `3=RIGHT` |
+| 4 | intensity | `0..100` percent |
+| 5 | timing-pair count | `1..4`; `0` only for STOP |
+| 6... | timing pairs | repeated `{on_ms/10, off_ms/10}` uint8 |
+
+Timing values are multiples of 10 ms and each encoded element is at most 2550 ms.
+
+## Direction mapping
+
+| CMD direction | Motor mask |
 |---|---|
-| 0 | `event_id` (matches the DIR notify sent just before this clip started) |
-| 1 | chunk index, 0-based, wraps past 255. **Use this to detect loss, not just order**: a chunk can be dropped after 3 failed retries (see `ble_svc.c`), so the receiver should check the sequence is contiguous (accounting for wraparound) and, on a gap, either discard the whole event or explicitly mark it as having missing audio before handing it to the classifier -- silently concatenating whatever arrived hands the model audio with unannounced holes in it. BLE still preserves per-characteristic notification order, so this is about detecting a hole, not reordering. |
-| 2 | flags, bit0 = last chunk of this event |
-| 3.. | PCM16 samples, little-endian |
+| STOP | both off; cancel active pattern |
+| LEFT | LEFT motor only |
+| CENTER | both motors simultaneously |
+| RIGHT | RIGHT motor only |
 
-Laptop length gate: a contiguous sequence is not enough, because the uint8
-index wraps inside one clip (…254, 255, 0, 1…). A receiver that subscribes
-mid-event can take the clip's second index 0 as a clean start and assemble a
-gap-free tail (e.g. 10240 samples / 0.64 s). `laptop/ble_receiver.py`
-therefore forwards a clip to AI only if it is exactly 40960 samples /
-81920 bytes; any other length is discarded. The wire format is unchanged.
+Invalid direction, intensity, length or pattern fields are rejected by the GATT write handler.
 
-Clip length is fixed at 2.56 s (40960 samples, `CLIP_FRAMES`=120 in
-`config.h`); meit-ai `classifier/adapter.py` keeps the first 2.5 s
-(`CLIP_SEC`). (Historical: this was ~0.5 s in earlier firmware.) **This was checked against the actual
-deployed model, not assumed**: `model/saved_model/danger_sound_classifier`'s
-signature takes `audio: shape=(None,)` (variable length), and feeding it a
-short clip with or without zero-padding to 4.5 s gave the same result in a
-synthetic test (not tracked in this repo -- re-run and record the result
-here if this claim needs to be re-checked). If real horn/siren/crash
-recordings later show a real difference, revisit this -- the synthetic test
-is not a substitute for testing on the actual target sounds.
+## Laptop compatibility normalization
 
-meit-ai's `classifier/adapter.py::predict()` takes a **file path**
-(`librosa.load`) and is not used for live BLE buffers. The live path is
-`laptop/ai_bridge.py::run_live_ai()`, which calls
-`classifier.adapter.predict_array()` and then `decision.judge.judge()`.
-That `judge()` result is authoritative for the live CMD path.
-`model/inference.py::classify_clip()` still exists for benchmark/eval use and
-has its own legacy intensity rule, but it is explicitly **not** used by the
-live BLE pipeline.
+`laptop/protocol.py` accepts:
 
-## DIR (notify, MCU -> laptop)
+- `left` -> LEFT
+- `right` -> RIGHT
+- `center`, `centre` -> CENTER
+- temporary current-iOS compatibility: `front`, `back` -> CENTER
+- missing/`unknown`/other -> STOP/suppress
 
-4 bytes, sent once per event, after a short multi-frame direction vote
-(~128 ms, see `TDOA_VOTE_FRAMES`), while the matching AUDIO clip is still being
-collected. The full clip is queued for transfer after 2.56 s:
+## Event semantics
 
-| byte | meaning |
-|---|---|
-| 0 | `event_id` -- the same value tags this event's AUDIO chunks and the CMD response for it |
-| 1 | direction: LEFT=6, RIGHT=2, BACK=4, or `0xFF` = unknown (maps to meit-ai's `direction: -1`) |
-| 2 | confidence, `uint8(conf * 255)`. 0 for `0xFF`; 1..255 for a resolved direction. |
-| 3 | RMS loudness in dBFS (of whichever channel was loudest), `int8`, clamped to [-128, 127] |
+`ios_motor_bridge.py` only sends a motor command for a **new** automatic event that is:
 
-**Direction-confidence and danger-detection are independent.** Byte 1 can be
-`0xFF` while the belt still sends the audio clip and expects a vibration
-command back -- an ambiguous direction must not suppress a real danger
-sound. See firmware `main.c` for why (this used to be a bug: the MCU
-silently dropped the whole event whenever TDoA confidence was low, which
-fights meit-ai's own Recall-first design).
+- `outcome == "completed"`
+- dangerous label `horn`, `siren`, or `crash`
+- not explicitly `danger == false`
+- a valid normalized direction
 
-Whoever writes the laptop-side BLE receiver: decode byte 1 as `-1` when it
-equals `0xFF`, else as the plain int, before calling `judge()`. Track
-`event_id` and pass it back unchanged in the CMD write.
+The Windows `/auto/status` endpoint retains its most recent event. EE therefore remembers the last successfully delivered `event_id` to prevent replay on every poll.
 
-## CMD (write, laptop -> MCU)
-
-Sent after `judge()` returns non-`None`. `direction` as a literal value is
-**not** included -- the MCU looks it up locally from `event_id` (a small
-ring buffer, see `main.c`; this replaced a single global that had a real
-race -- see `main.c`'s `event_table` comment). `pattern_name` and the string form of
-`sound_class` are also dropped; a numeric id carries the same information
-for on-device logging.
-
-| offset | field | notes |
-|---|---|---|
-| 0 | `event_id` | echo of the DIR/AUDIO this command responds to |
-| 1 | `intensity` | 0-100, taken as-is from meit-ai's `intensity` |
-| 2 | `sound_class` | 0=horn, 1=siren, 2=crash, `0xFF`=none. Order matches `classifier/adapter.py` `CLASSES` |
-| 3 | `n_pairs` | 1..4 |
-| 4.. | `n_pairs` x `{on_ms/10 : u8, off_ms/10 : u8}` | e.g. `[[100,50],[100,0]]` -> `10,5,10,0` |
-
-Max size 4 + 2x4 = 12 bytes, fits one ATT packet without MTU negotiation.
-
-If `event_id` doesn't match anything in the MCU's recent-event history
-(evicted or never recorded; a duplicate for an event still in the ring can replay its pattern), firmware keeps all
-motors **OFF** (`mask = 0x00`) as a fail-safe. An invalid stored direction
-(neither `0xFF` nor one of 6/2/4) is handled the same way. These are fault/stale-state
-cases and must not be conflated with a genuine TDoA `DIR_UNKNOWN` result.
-
-### Unknown-direction behavior
-
-Supported wire values retain their old numeric meanings: LEFT=6, RIGHT=2,
-BACK=4. The other old direction values (0/1/3/5/7) are rejected by the laptop.
-The three compact firmware vote indices are converted through `direction.h`.
-The external meit-ai judge receives the retained wire integers unchanged.
-
-| Wire value | Direction | Motor selection |
-|---|---|---|
-| 6 | LEFT | GPIO21 only |
-| 2 | RIGHT | GPIO13 only |
-| 4 | BACK | GPIO21 + GPIO13 together |
-
-Pins are defined only by `MOTOR_LEFT_GPIO` / `MOTOR_RIGHT_GPIO` in
-`main/config.h` (verified wiring: LEFT=GPIO21, RIGHT=GPIO13).
-
-If DIR reported `0xFF` and a CMD arrives, firmware plays LEFT for 80 ms,
-OFF for 40 ms, then RIGHT for 80 ms, using CMD intensity. This dedicated
-unknown alert replaces the normal pattern only for unresolved status.
-It differs from BACK, which uses both motors simultaneously for every ON step
-of the AI-provided pattern. There are exactly three valid directions.
-
-Two lateral microphones cannot physically distinguish front/back by TDoA alone.
-The prototype excludes FRONT from its operating domain; reliable near-zero delay
-is mapped to BACK. Low confidence is UNKNOWN, not a center-axis estimate.
-
-## Units
-
-Both sides use dBFS (digital full scale, negative, `20*log10(rms)` on a
-[-1, 1] signal) -- verified to match, not assumed:
-`classifier/adapter.py::measure_db()` computes it the same way the firmware
-does in `audio_capture.c`. No conversion needed at the boundary.
-
-**Gate levels must stay ordered.** The MCU's `RMS_GATE_DBFS` (`config.h`) is
-a pre-gate only, to cut BLE traffic during real silence -- it must stay
-LOOSER (more negative) than meit-ai's `DB_GATE` (`decision/judge.py`), or
-the MCU silently drops sounds the AI would have accepted before the AI ever
-sees them. This was actually backwards in an earlier snapshot (-45 vs
-meit-ai's -50) and is fixed to -60 here, but neither value has been checked
-against real hardware yet -- re-verify the relationship holds once either
-side's number changes.
-
-## Known open items
-
-The current code-level EE↔AI contract is aligned for the MVP, but the following
-items still require hardware validation or manual cross-checks:
-
-- [x] Live AI path: `laptop/ai_bridge.py::run_live_ai()` uses meit-ai
-      `classifier.adapter.predict_array()` + `decision.judge.judge()`.
-      `classify_clip()` is not on the live path.
-- [x] AI intensity policy: the live `decision/intensity.py` no longer applies
-      the old `LOW_CONF_RATIO`; confidence gates alert/no-alert in `judge()`,
-      while dBFS drives intensity.
-- [ ] Both sides: `GATING_MS` is currently 250 ms on both repos, but the value
-      is still duplicated rather than shared. If either side changes it,
-      re-run the contract check and review MCU cooldown/pattern timing.
-- [ ] Electronics side: **AUDIO chunk count depends on negotiated ATT MTU.**
-      If MTU negotiation stays near the BLE default, a 40960-sample clip will
-      require many more chunks and may be too slow for a live alert. Confirm on
-      real hardware that `ble_att_set_preferred_mtu(247)` actually results in
-      a larger negotiated MTU (`ble_att_mtu()`).
-- [ ] Hardware end-to-end: validate real `DIR + AUDIO -> AI -> CMD -> motor`
-      with the ESP32-S3 and laptop connected. The code path is implemented,
-      but real BLE throughput, reconnect behavior, chunk loss, and latency are
-      still unverified.
+The event cursor advances only after a successful GATT write. A failed write causes reconnection and permits retry of the same event.

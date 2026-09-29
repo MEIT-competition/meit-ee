@@ -41,7 +41,7 @@ static TaskHandle_t  seq_task_handle;
 #define SEQ_QUEUE_LEN 4   // generous: normal traffic never exceeds 1-2
                           // pending messages, see motor_seq_task's comment
 
-typedef enum { SEQ_MSG_TICK, SEQ_MSG_PLAY } seq_msg_type_t;
+typedef enum { SEQ_MSG_TICK, SEQ_MSG_PLAY, SEQ_MSG_STOP } seq_msg_type_t;
 typedef struct {
     seq_msg_type_t type;
     uint8_t  intensity_pct;   // SEQ_MSG_PLAY only, already clamped 0..100
@@ -52,6 +52,7 @@ typedef struct {
 
 static void motor_seq_task(void *arg);
 static void handle_play(const seq_msg_t *m);
+static void handle_stop(void);
 static void advance_step(void);
 static void motor_timer_cb(void *arg);
 
@@ -123,11 +124,8 @@ void motor_init(void)
         ESP_ERROR_CHECK(esp_timer_create(&a, &pattern_timer));
     }
     if (!seq_task_handle) {
-        // Priority: above ble_task (4) so a queued command or a due tick
-        // is not held up behind BLE housekeeping, below capture_task (6)
-        // since audio capture must never be delayed. Tune if real-hardware
-        // timing shows jitter -- nothing else in this file depends on the
-        // exact number.
+        // Keep the motor sequencer responsive without making BLE callbacks
+        // manipulate timer/sequencer state directly.
         BaseType_t created = xTaskCreate(motor_seq_task, "motor_seq", 3072,
                                          NULL, 5, &seq_task_handle);
         if (created != pdPASS) {
@@ -228,6 +226,16 @@ static void advance_step(void)
     }
 }
 
+
+static void handle_stop(void)
+{
+    if (timer_armed) {
+        (void)esp_timer_stop(pattern_timer);
+    }
+    force_all_off_and_reset();
+    ESP_LOGI(TAG, "[MOTOR] STOP");
+}
+
 // Install and start a new pattern. Called only from motor_seq_task.
 static void handle_play(const seq_msg_t *m)
 {
@@ -269,8 +277,10 @@ static void motor_seq_task(void *arg)
     (void)arg;
     seq_msg_t msg;
     for (;;) {
-        if (xQueueReceive(seq_queue, &msg, step_wait_ticks()) == pdTRUE &&
-            msg.type == SEQ_MSG_PLAY) handle_play(&msg);
+        if (xQueueReceive(seq_queue, &msg, step_wait_ticks()) == pdTRUE) {
+            if (msg.type == SEQ_MSG_PLAY) handle_play(&msg);
+            else if (msg.type == SEQ_MSG_STOP) handle_stop();
+        }
         // Old, duplicate and inactive TICKs carry no authority to advance.
         // A late wake-up may service a now-due step, but never an early one.
         if (timer_armed && esp_timer_get_time() >= step_deadline_us) {
@@ -320,12 +330,13 @@ void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
     queue_pattern(step_masks, intensity_pct, steps, n_steps);
 }
 
-void motor_play_unknown_pattern(uint8_t intensity_pct)
+void motor_stop_pattern(void)
 {
-    const uint8_t masks[NUM_MOTORS] = {MOTOR_MASK_LEFT, MOTOR_MASK_RIGHT};
-    const motor_step_t steps[NUM_MOTORS] = {
-        {UNKNOWN_SWEEP_ON_MS, UNKNOWN_SWEEP_OFF_MS},
-        {UNKNOWN_SWEEP_ON_MS, 0},
-    };
-    queue_pattern(masks, intensity_pct, steps, NUM_MOTORS);
+    if (!seq_queue) {
+        motor_all_off();
+        return;
+    }
+    seq_msg_t m = { .type = SEQ_MSG_STOP };
+    if (xQueueSend(seq_queue, &m, portMAX_DELAY) != pdTRUE)
+        ESP_LOGE(TAG, "failed to queue motor stop");
 }

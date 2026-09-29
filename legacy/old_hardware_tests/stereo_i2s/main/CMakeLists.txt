@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "stereo_i2s_main.c"
+        "../../../main/audio_capture.c"
+        "../../../main/audio_samples.c"
+    INCLUDE_DIRS
+        "."
+        "../../../main"
+    REQUIRES
+        driver
+        heap
+        esp_rom
+        soc
+)
