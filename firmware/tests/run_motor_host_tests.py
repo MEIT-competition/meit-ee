@@ -36,8 +36,8 @@ typedef void *esp_timer_handle_t;
 #define ESP_LOGI(tag,...) ((void)(tag))
 #define ESP_LOGW(tag,...) ((void)(tag))
 #define ESP_LOGE(tag,...) ((void)(tag))
+#define GPIO_NUM_21 21
 #define GPIO_NUM_13 13
-#define GPIO_NUM_1 1
 #define LEDC_LOW_SPEED_MODE 0
 #define LEDC_TIMER_8_BIT 8
 #define LEDC_TIMER_0 0

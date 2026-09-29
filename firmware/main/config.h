@@ -48,7 +48,9 @@
 #define SD_SCK_PIN        GPIO_NUM_12
 #define SD_MOSI_PIN       GPIO_NUM_14
 #define SD_MISO_PIN       GPIO_NUM_18
-#define SD_CS_PIN         GPIO_NUM_21
+// GPIO21 is now the verified LEFT motor input. SD logging is not implemented;
+// assign a new CS pin only when that optional hardware is actually added.
+#define SD_CS_PIN         (-1)
 
 
 // DMA slot order: L/R=GND -> CH_LEFT, L/R=3V3 -> CH_RIGHT.
@@ -96,8 +98,8 @@ enum { CH_LEFT = 0, CH_RIGHT = 1 };
 
 // --- Two DRV8833 boards, A channel only, two motors, LEDC PWM ---
 enum { MOTOR_LEFT = 0, MOTOR_RIGHT = 1, NUM_MOTORS = 2 };
-#define MOTOR_LEFT_GPIO   GPIO_NUM_13
-#define MOTOR_RIGHT_GPIO  GPIO_NUM_1
+#define MOTOR_LEFT_GPIO   GPIO_NUM_21
+#define MOTOR_RIGHT_GPIO  GPIO_NUM_13
 #define MOTOR_MASK_LEFT  (1u << MOTOR_LEFT)
 #define MOTOR_MASK_RIGHT (1u << MOTOR_RIGHT)
 #define MOTOR_MASK_BOTH  (MOTOR_MASK_LEFT | MOTOR_MASK_RIGHT)

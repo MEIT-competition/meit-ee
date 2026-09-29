@@ -31,8 +31,8 @@ FIR, streaming decimation phase, PCM16 saturation을 유지합니다. 두 채널
 | I2S DIN | GPIO7 ← 두 마이크 SD 공통 |
 | LEFT microphone | L/R=GND → left slot → `CH_LEFT=0` |
 | RIGHT microphone | L/R=3.3V → right slot → `CH_RIGHT=1` |
-| LEFT motor | GPIO13 → 해당 DRV8833 AIN1 |
-| RIGHT motor | GPIO1 → 해당 DRV8833 AIN1 |
+| LEFT motor | GPIO21 → 해당 DRV8833 AIN1 |
+| RIGHT motor | GPIO13 → 해당 DRV8833 AIN1 |
 | 각 DRV8833 | AIN2=GND, AOUT1/2에 모터, SLP=3V3 |
 
 두 드라이버는 각각 A channel만 사용합니다. GPIO15/16/17, 두 번째 I2S와 clock
@@ -41,7 +41,8 @@ loopback은 사용하지 않습니다. 확정 핀은 [PINMAP](firmware/PINMAP.md
 
 LOLIN S3 V1.0.0의 **16 MB Quad SPI flash / 8 MB Octal PSRAM, 80 MHz, NimBLE**
 설정은 유지했습니다. Clip 작업 버퍼와 BLE queue는 PSRAM을 사용합니다.
-IMU GPIO42/41, microSD GPIO12/14/18/21은 기존 예약만 유지하며 driver는 미구현입니다.
+IMU GPIO42/41과 microSD SCK/MOSI/MISO GPIO12/14/18은 예약만 유지합니다.
+기존 SD CS GPIO21은 LEFT motor가 사용하므로 SD CS는 미할당이며 driver도 미구현입니다.
 
 전원 구성은 기존 문서의 USB-C ESP32 / 별도 4×AA motor rail / common GND를 유지합니다.
 최신 요청에는 배터리 종류·전압 변경 정보가 없으므로 이를 새로 가정하지 않았습니다.

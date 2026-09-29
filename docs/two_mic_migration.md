@@ -110,12 +110,13 @@ confidence remains an UNKNOWN status, not a fourth direction or an artificial BA
 | I2S BCLK | 5 |
 | I2S WS | 6 |
 | I2S DIN | 7 |
-| LEFT DRV8833 AIN1 | 13 |
-| RIGHT DRV8833 AIN1 | 1 |
+| LEFT DRV8833 AIN1 | 21 |
+| RIGHT DRV8833 AIN1 | 13 |
 
 Both AIN2 pins are grounded. LEFT mic L/R=GND; RIGHT mic L/R=3.3V.
-Optional reserved pins remain IMU SDA/SCL=42/41 and SD SPI=12/14/18/21.
-GPIO15/16/17 and retired motor GPIO2/4/8/9/10/11 are not configured by this runtime.
+Optional reserved pins remain IMU SDA/SCL=42/41 and SD SPI SCK/MOSI/MISO=12/14/18;
+SD CS is unassigned because GPIO21 is the LEFT motor input.
+GPIO15/16/17 and retired motor GPIO1/2/4/8/9/10/11 are not configured by this runtime.
 
 ## E. Direction mapping
 
@@ -193,8 +194,9 @@ checks passed and the build used IDF 5.2.5. No code compilation error was report
    RMS and actual mic-side BCLK/WS/SD. Software test data cannot prove physical wiring.
 2. Measure worn mic spacing, center bias, delay threshold and firmware confidence
    with real LEFT/RIGHT/center sounds, reflections and motor vibration.
-3. Verify GPIO13 drives physical LEFT and GPIO1 physical RIGHT; confirm simultaneous
-   BACK output, startup duty, motor rail sag, brownout and driver temperature.
+3. Direct HIGH/LOW testing verified GPIO21=LEFT, GPIO13=RIGHT and simultaneous BOTH.
+   Confirm the production PWM pattern, startup duty, motor rail sag, brownout and
+   driver temperature on the final assembled board.
 4. Determine AA chemistry/maximum pack voltage and set `MOTOR_SUPPLY_MV`; 4200 mV
    remains the pre-existing provisional value because the latest request gives no rail value.
 5. Check average/downmix level/phase effects on the real model, BLE MTU/throughput,

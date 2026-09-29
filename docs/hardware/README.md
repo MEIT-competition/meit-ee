@@ -15,8 +15,8 @@ GPIO6 WS   → both microphones WS
 GPIO7 DIN  ← both microphones SD
 LEFT L/R=GND; RIGHT L/R=3.3V
 
-GPIO13 → LEFT driver AIN1;  LEFT AIN2=GND
-GPIO1  → RIGHT driver AIN1; RIGHT AIN2=GND
+GPIO21 → LEFT driver AIN1;  LEFT AIN2=GND
+GPIO13 → RIGHT driver AIN1; RIGHT AIN2=GND
 Each motor → its driver's AOUT1/2; SLP=3V3
 ```
 
@@ -36,7 +36,9 @@ positive to ESP32 3V3/5V. The latest hardware request did not specify a new rail
 `MOTOR_SUPPLY_MV=4200` remains the old provisional value; confirm cell chemistry,
 maximum pack voltage and motor rating before calibrating PWM duty.
 
-IMU SDA/SCL=42/41 and SD SCK/MOSI/MISO/CS=12/14/18/21 remain reserved, unimplemented.
+IMU SDA/SCL=42/41 and SD SCK/MOSI/MISO=12/14/18 remain reserved and unimplemented.
+SD CS is unassigned because the previously reserved GPIO21 is now the verified LEFT
+motor input. Assign a non-conflicting CS pin only when SD logging is implemented.
 See [PINMAP](../../firmware/PINMAP.md) for pin exclusions and [README](../../README.md)
 for build, BLE and bring-up commands.
 
@@ -51,8 +53,10 @@ the current circuit. Optional module drawings 07/08 remain reference material.
 ## Remaining measurements
 
 Verify L/R strap-to-slot mapping, microphone-side clocks/data and worn TDoA
-threshold; LEFT GPIO13 / RIGHT GPIO1 physical outputs; simultaneous BACK load,
-minimum startup duty, VM sag/brownout/driver temperature; and BLE/AI latency.
+threshold; production-PWM minimum startup duty, VM sag/brownout/driver temperature;
+and BLE/AI latency. The direct HIGH/LOW hardware test has already verified LEFT
+GPIO21, RIGHT GPIO13 and both motors together with the stated two-DRV8833 wiring;
+the production LEDC pattern and full BLE end-to-end path still need board validation.
 Host tests/build success are not evidence that these physical checks passed.
 
 INMP441 timing/channel reference: [TDK datasheet](https://product.tdk.com/system/files/dam/doc/product/sw_piezo/mic/mems-mic/data_sheet/inmp441.pdf).

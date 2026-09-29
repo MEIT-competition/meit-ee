@@ -28,7 +28,7 @@ int xTaskCreate(void (*fn)(void *),const char *name,int stack,void *arg,int prio
 int ledc_timer_config(const ledc_timer_config_t *t) { return ESP_OK; }
 int ledc_channel_config(const ledc_channel_config_t *c) {
     if (c->channel < 0 || c->channel >= NUM_MOTORS) abort();
-    if (c->gpio_num != (c->channel == MOTOR_LEFT ? 13 : 1)) abort();
+    if (c->gpio_num != (c->channel == MOTOR_LEFT ? 21 : 13)) abort();
     return ESP_OK;
 }
 int ledc_set_duty(int mode,int channel,uint32_t duty)

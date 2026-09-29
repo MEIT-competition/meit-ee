@@ -9,7 +9,9 @@
 
 - 마이크 LEFT L/R=GND, RIGHT L/R=3.3V. 두 SD=GPIO7, SCK=GPIO5, WS=GPIO6.
   마이크 전원과 공통 GND를 확인한다. CHIPEN이 노출된 모듈은 활성 상태를 확인한다.
-- LEFT DRV8833 AIN1=GPIO13, RIGHT AIN1=GPIO1, 양쪽 AIN2=GND, SLP=3.3V.
+- LEFT DRV8833 AIN1=GPIO21, RIGHT AIN1=GPIO13, 양쪽 AIN2=GND, SLP=3.3V.
+  이 핀과 LEFT/RIGHT/BOTH 조합은 직접 HIGH/LOW 테스트에서 정상 동작이 확인되었다.
+  production firmware는 같은 핀에 LEDC PWM을 사용한다.
   초기 마이크 시험 중에는 모터 VM 전원을 분리한다. 배선 변경은 전원을 끈 상태에서 한다.
 - **TODO(power): `MOTOR_SUPPLY_MV=4200`은 provisional 값이다.** 배터리 종류,
   새 배터리/완충 시 최대 VM, 부하 중 VM, 모터 정격을 확인하기 전에는 다른 값으로
@@ -266,8 +268,8 @@ reset 때문에 반복될 수 있다. 출력 측정 준비를 먼저 끝내고 �
 ```text
 motor: 2 motor channels ready @ 20000 Hz, duty capped at 182/255 (3000 mV motor on a 4200 mV rail)
 motor_self_test: start: intensity=15%, LEFT then RIGHT then BOTH
-motor_self_test: motor=0 gpio=13 intensity=15%
-motor_self_test: motor=1 gpio=1 intensity=15%
+motor_self_test: motor=0 gpio=21 intensity=15%
+motor_self_test: motor=1 gpio=13 intensity=15%
 motor_self_test: BACK: LEFT + RIGHT together
 motor_self_test: complete: all motors off
 ```
@@ -284,7 +286,7 @@ idf.py -C "$Motor" -p "$Port" monitor
 
 필요하면 monitor에서 `Ctrl+T`, `Ctrl+R`로 한 번 더 실행한다. 기대 로그는 5단계와 같다.
 
-| 구간 | GPIO13 / LEFT | GPIO1 / RIGHT | 실물 확인 |
+| 구간 | GPIO21 / LEFT | GPIO13 / RIGHT | 실물 확인 |
 |---|---|---|---|
 | motor=0, 약 700 ms | PWM | LOW | 착용자 기준 왼쪽만 진동 |
 | gap, 약 500 ms | LOW | LOW | 양쪽 정지 |
@@ -412,8 +414,8 @@ BLE 끊김 후 재접속도 시험한다. `(L+R)/2` downmix는 지연/위상에 
 | 항목 | 소스 검수 결과 / 남은 확인 |
 |---|---|
 | stereo slot | IDF 5.2.5 ESP32-S3 Philips defaults: BOTH, WS low first, bit_shift, left_align. `raw[2n]` / `raw[2n+1]` 처리와 일치. 실물 L/R 스트랩·핀 확인 필요. |
-| GPIO | 활성 5/6/7/13/1 및 예약 42/41/12/14/18/21 사이 중복 없음. 코드상 USB/PSRAM/strapping 예약 핀과도 겹치지 않음. 실제 모듈·배선은 별도 확인. |
-| BACK PWM | 두 LEDC channels가 동일 timer·duty·pattern을 사용함. 순차 update의 시작 edge, 동시 부하·기동·온도는 미측정. |
+| GPIO | 활성 5/6/7/21/13 및 예약 42/41/12/14/18 사이 중복 없음. SD CS는 GPIO21에서 해제되어 미할당. LEFT=21 / RIGHT=13은 직접 HIGH/LOW 실기기 테스트 완료. |
+| BACK PWM | 직접 HIGH/LOW BOTH 동작은 실기기 확인됨. Production의 두 LEDC channels는 동일 timer·duty·pattern을 사용하며, 순차 update의 시작 edge·실제 PWM 기동·온도는 별도 확인 필요. |
 | 전압 / calibration | 4200 mV, bias=0, threshold=2 모두 실측 승인 전. commit 가능 여부와 실제 모터 구동 가능 여부를 구분. |
 | I2S 연속성 | DMA descriptor 480 stereo frames=3840 bytes는 유효. 그러나 IDF RX 큐가 넘치면 오래된 DMA 항목을 버리며 다음 read가 성공할 수 있음. 현재 `on_recv_q_ovf` 관측이 없어 read 성공/정상 길이만으로 연속성을 보증하지 못함. 부하/로그 출력에 의한 지연은 하드웨어 stress 측정 대상. |
 | BLE / CMD | 현 receiver와 6/2/4, UUID, byte layout 일치. DIR notify 실패를 capture 측에서 처리하지 않으며, AUDIO TX 완료는 peer 수신 ACK가 아님. gap은 receiver가 AI 전에 버리지만 마지막 chunk 손실은 완료 로그가 안 나올 수 있음. 성공 로그만 보지 말고 길이·event·실물까지 확인. |
