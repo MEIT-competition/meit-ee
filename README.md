@@ -122,6 +122,7 @@ python tdoa/test_parse_dump.py
 python firmware/tests/run_audio_host_tests.py --cc gcc
 python firmware/tests/run_motor_host_tests.py --cc gcc
 python firmware/tests/run_event_direction_host_tests.py --cc gcc
+python firmware/tests/run_tdoa_tonal_diagnostic.py --cc gcc   # delay FAIL only; confidence printed
 python firmware/tests/timer_race_model.py
 ```
 

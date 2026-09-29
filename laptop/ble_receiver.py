@@ -7,13 +7,14 @@ from bleak import BleakClient, BleakScanner
 
 from laptop.ai_bridge import run_live_ai, run_mock_ai, warmup_live_ai
 from laptop.protocol import (
+    AUDIO_CLIP_BYTES, AUDIO_CLIP_SAMPLES, AUDIO_SAMPLE_RATE,
     AUDIO_UUID, CMD_UUID, DEVICE_NAME, DIR_UUID,
     AudioAssembler, decode_audio_chunk, decode_dir_packet,
     direction_name, encode_cmd, pcm16le_to_float32,
 )
 from display_server import show, start  
 
-AI_SAMPLE_RATE = 16000
+AI_SAMPLE_RATE = AUDIO_SAMPLE_RATE
 
 class Receiver:
     def __init__(self, mock_ai: bool = False) -> None:
@@ -86,6 +87,19 @@ class Receiver:
                 print(
                     f"[AUDIO] event={completed.event_id}: chunk gap detected -> "
                     "discarding before AI"
+                )
+                continue
+
+            # chunk_index is uint8 and wraps 255 -> 0 inside one clip, so a
+            # receiver that joins mid-event can see the clip's second index 0
+            # as a clean start and assemble a gap-free but truncated tail
+            # (e.g. 10240 samples). Only an exact contract-length clip may
+            # reach AI.
+            if len(completed.pcm_bytes) != AUDIO_CLIP_BYTES:
+                print(
+                    f"[AUDIO] event={completed.event_id}: "
+                    f"{len(completed.pcm_bytes) // 2} samples != "
+                    f"{AUDIO_CLIP_SAMPLES} -> discarding before AI"
                 )
                 continue
 

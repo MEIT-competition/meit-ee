@@ -36,8 +36,7 @@ typedef void *esp_timer_handle_t;
 #define ESP_LOGI(tag,...) ((void)(tag))
 #define ESP_LOGW(tag,...) ((void)(tag))
 #define ESP_LOGE(tag,...) ((void)(tag))
-#define GPIO_NUM_21 21
-#define GPIO_NUM_13 13
+@GPIO_NUMS@
 #define LEDC_LOW_SPEED_MODE 0
 #define LEDC_TIMER_8_BIT 8
 #define LEDC_TIMER_0 0
@@ -72,7 +71,10 @@ def main():
     result = 0
     with tempfile.TemporaryDirectory(prefix='meit-motor-') as tmp:
         d = pathlib.Path(tmp)
-        (d / 'host_stub.h').write_text(STUB)
+        # Every ESP32-S3 GPIO_NUM_n is n, so the stub never names the motor
+        # pins itself: config.h's MOTOR_*_GPIO stays the only source of truth.
+        gpio_nums = '\n'.join(f'#define GPIO_NUM_{n} {n}' for n in range(49))
+        (d / 'host_stub.h').write_text(STUB.replace('@GPIO_NUMS@', gpio_nums))
         for header in ['freertos/FreeRTOS.h', 'freertos/task.h', 'freertos/queue.h',
                        'driver/ledc.h', 'driver/gpio.h', 'esp_timer.h', 'esp_log.h']:
             f = d / header
