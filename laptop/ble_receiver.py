@@ -11,6 +11,7 @@ from laptop.protocol import (
     AudioAssembler, decode_audio_chunk, decode_dir_packet,
     direction_name, encode_cmd, pcm16le_to_float32,
 )
+from display_server import show, start  
 
 AI_SAMPLE_RATE = 16000
 
@@ -119,6 +120,7 @@ class Receiver:
 
             if result is None:
                 print("[AI] normal/below gate -> no CMD")
+                show()
                 continue
 
             try:
@@ -138,6 +140,9 @@ class Receiver:
                 print(f"[CMD] event={completed.event_id}: failed to send: {exc}")
                 continue
             print(f"[CMD] event={completed.event_id} bytes={list(cmd)}")
+            show(result.sound_class,          
+                 dir_info.direction if dir_info else -1,
+                 result.intensity)
 
 async def find_belt(timeout: float):
     print(f"[SCAN] looking for {DEVICE_NAME!r}...")
@@ -220,6 +225,7 @@ def main():
     p.add_argument("--once", action="store_true",
                    help="exit after the first disconnect instead of reconnecting")
     args = p.parse_args()
+    start()
     if not args.mock_ai:
         print("[AI] loading model (warm-up)...")
         warmup_live_ai(AI_SAMPLE_RATE)
