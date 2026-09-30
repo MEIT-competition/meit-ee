@@ -37,11 +37,6 @@ from laptop.haptic import (
 )
 from laptop.protocol import DIR_STOP, direction_name, normalize_direction
 
-try:  # 시연 화면(선택). 없어도 벨트 동작에는 영향 없음
-    from display_server import show, start as start_display
-except ImportError:
-    show = start_display = None
-
 LOGGER = logging.getLogger("meit.ios")
 
 DEFAULT_SERVER = "http://127.0.0.1:8765"
@@ -58,7 +53,6 @@ class Event:
     confidence: float
     danger: bool
     margin_db: Optional[float] = None
-    intensity: Optional[float] = None
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -101,7 +95,6 @@ def extract_event(status: Dict[str, Any], *, allow_back: bool = True) -> Optiona
         # manual-path responses, so only an explicit False suppresses.
         danger=result.get("danger") is not False,
         margin_db=_as_float(event.get("direction_margin_db")),
-        intensity=_as_float(result.get("intensity")),
     )
 
 
@@ -126,9 +119,8 @@ class IOSMotorBridge:
                  intensity_scale: float = 1.0,
                  poll_interval: float = 0.1,
                  http_timeout: float = 1.0,
-                 allow_back: bool = True,
-                 status_path: str = "/auto/status") -> None:
-        self.status_url = server.rstrip("/") + status_path
+                 allow_back: bool = True) -> None:
+        self.status_url = server.rstrip("/") + "/auto/status"
         self.profile = profile
         self.intensity_scale = intensity_scale
         self.poll_interval = poll_interval
@@ -191,9 +183,6 @@ class IOSMotorBridge:
         # stays put so the same hazard is retried after reconnecting instead of
         # being lost, which is the whole point of doing this after the write.
         self.seen_event_id = event.event_id
-        if show is not None:
-            # 실제 BLE 전송이 성공한 뒤에만 화면 갱신 (화면이 벨트보다 앞서가지 않게)
-            show(event.label, event.direction, event.intensity)
         margin = "" if event.margin_db is None else f" margin={event.margin_db:.1f}dB"
         LOGGER.info("ALERT event=%s %s/%s conf=%.3f%s -> %s",
                     event.event_id[:8], direction_name(event.direction),
@@ -223,9 +212,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="MEIT: meit-ios /auto/status -> haptic pattern -> BLE belt")
     parser.add_argument("--server", default=DEFAULT_SERVER,
                         help="meit-ios laptop bridge base URL")
-    parser.add_argument("--status-path", default="/auto/status",
-                        choices=["/auto/status", "/wearable/status"],
-                        help="/auto/status = iPhone 4대 모드, /wearable/status = iPhone 1대 웨어러블 모드")
     parser.add_argument("--poll-ms", type=int, default=100,
                         help="/auto/status polling interval in milliseconds")
     parser.add_argument("--http-timeout", type=float, default=1.0)
@@ -258,11 +244,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         # A v2 belt cannot render a sweep, so fold BACK into FRONT at the
         # source rather than letting the transport downgrade it silently.
         allow_back=args.protocol >= 3,
-        status_path=args.status_path,
     )
     belt = belt_from_arguments(args)
-    if start_display is not None:
-        start_display()
     try:
         asyncio.run(belt.run_forever(bridge.session))
     except KeyboardInterrupt:
