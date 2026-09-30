@@ -8,7 +8,7 @@ This document describes the **active** hardware path only. The old INMP441 / TDo
 Windows laptop BLE -> ESP32-S3 -> DRV8833 -> LEFT / RIGHT vibration motors
 ```
 
-The iPhone side and Windows `meit-ios` bridge perform audio collection, direction selection and AI inference. The ESP32 does not sample microphones and does not estimate direction.
+The iPhone side performs audio collection and the stereo direction estimate, and the laptop runs `meit-ai`. The ESP32 does not sample microphones and does not estimate direction; it receives a finished haptic command and plays it.
 
 ## GPIO
 
@@ -26,9 +26,13 @@ Both motor-driver grounds and ESP32 ground must be common.
 | Direction command | LEFT motor | RIGHT motor |
 |---|---|---|
 | `LEFT` | ON | OFF |
-| `CENTER` | ON | ON |
+| `CENTER` | ON | ON, simultaneously |
 | `RIGHT` | OFF | ON |
-| `STOP` / unknown | OFF | OFF |
+| `STOP` / unavailable | OFF | OFF |
+
+`firmware/hardware_tests/motor_self_test` drives each motor in turn, then both
+together, then a two-pulse pattern through the real sequencer — so a wiring or
+timer fault is caught before BLE, the laptop and the AI are in the picture.
 
 ## Electrical note
 

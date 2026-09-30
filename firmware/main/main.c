@@ -1,7 +1,12 @@
 // MEIT belt - motor-only firmware.
-// Direction estimation and danger-sound AI are handled by iPhone(s) + the
-// existing meit-ios Windows bridge. The ESP32 only receives a final 3-way
-// direction command and drives two vibration motors.
+//
+// The stereo direction estimate and the danger-sound AI both live on the laptop
+// side. This firmware receives a finished haptic command over BLE and plays it on
+// two vibration motors. It makes no decisions about what to alert on; it only
+// refuses to play a malformed pattern.
+//
+// Three sensations, matching the three directions iOS reports: left motor only,
+// right motor only, or both together. See docs/HAPTIC_DESIGN.md.
 
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -23,7 +28,7 @@ static const char *cmd_direction_name(uint8_t d)
 }
 
 static void on_cmd(uint8_t sequence, uint8_t direction, uint8_t intensity,
-                   const motor_step_t *steps, int n_steps)
+                   uint8_t motor_mask, const motor_step_t *steps, int n_steps)
 {
     if (direction == CMD_DIR_STOP) {
         motor_stop_pattern();
@@ -31,18 +36,15 @@ static void on_cmd(uint8_t sequence, uint8_t direction, uint8_t intensity,
         return;
     }
 
-    uint8_t mask = motor_mask_for_cmd_direction(direction);
-    if (mask == 0 || steps == NULL || n_steps <= 0) {
+    if (motor_mask == 0 || steps == NULL || n_steps <= 0) {
         motor_stop_pattern();
         ESP_LOGE(TAG, "invalid CMD seq=%u dir=%u", sequence, direction);
         return;
     }
 
-    ESP_LOGI(TAG, "CMD seq=%u direction=%s intensity=%u L=%s R=%s",
-             sequence, cmd_direction_name(direction), intensity,
-             (mask & MOTOR_MASK_LEFT) ? "ON" : "OFF",
-             (mask & MOTOR_MASK_RIGHT) ? "ON" : "OFF");
-    motor_play_pattern(mask, intensity, steps, n_steps);
+    ESP_LOGI(TAG, "CMD seq=%u direction=%s intensity=%u steps=%d",
+             sequence, cmd_direction_name(direction), intensity, n_steps);
+    motor_play_pattern(motor_mask, intensity, steps, n_steps);
 }
 
 void app_main(void)
@@ -58,5 +60,5 @@ void app_main(void)
     ble_svc_set_cmd_cb(on_cmd);
     ble_svc_init();
 
-    ESP_LOGI(TAG, "ready: iOS/AI -> laptop -> BLE -> LEFT/CENTER/RIGHT motors");
+    ESP_LOGI(TAG, "ready: iOS/AI -> laptop -> BLE -> LEFT/CENTER/RIGHT haptics");
 }

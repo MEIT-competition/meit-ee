@@ -31,5 +31,20 @@ void app_main(void)
     motor_trigger(MOTOR_RIGHT, intensity);
     vTaskDelay(pdMS_TO_TICKS(CONFIG_MEIT_MOTOR_TEST_ON_MS));
     motor_all_off();
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_MEIT_MOTOR_TEST_GAP_MS));
+
+    // Exercise the real pattern sequencer too, not just the direct per-motor
+    // drive above: a bring-up failure in the queue/timer path is then caught
+    // before BLE, the laptop and the AI are in the picture.
+    ESP_LOGI(TAG, "CENTER pattern: two pulses through the sequencer");
+    const motor_step_t pulses[2] = {
+        {.on_ms = 250, .off_ms = 150},
+        {.on_ms = 250, .off_ms = 0},
+    };
+    motor_play_pattern(MOTOR_MASK_BOTH, CONFIG_MEIT_MOTOR_TEST_INTENSITY_PCT,
+                       pulses, 2);
+    vTaskDelay(pdMS_TO_TICKS(900));
+
+    motor_all_off();
     ESP_LOGI(TAG, "complete: all motors off");
 }

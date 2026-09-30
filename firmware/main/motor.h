@@ -9,9 +9,12 @@ void motor_set(int idx, uint8_t duty);
 void motor_all_off(void);
 void motor_stop_pattern(void);
 void motor_trigger(int idx, float intensity);
+
+// Play a pattern on the motors `motor_mask` selects.
 void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
                         const motor_step_t *steps, int n_steps);
 
+// Which motors a CMD direction byte drives.
 static inline uint8_t motor_mask_for_cmd_direction(uint8_t direction)
 {
     switch (direction) {

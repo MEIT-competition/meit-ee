@@ -27,8 +27,8 @@ const int MOTOR_GPIO[NUM_MOTORS] = {MOTOR_LEFT_GPIO, MOTOR_RIGHT_GPIO};
 // qualifier is needed on any of it: a single task touching its own local
 // state needs none of those, by construction.
 static esp_timer_handle_t pattern_timer;
-static motor_step_t steps_buf[PATTERN_MAX_PAIRS];
-static uint8_t step_masks_buf[PATTERN_MAX_PAIRS];
+static motor_step_t steps_buf[PATTERN_MAX_STEPS];
+static uint8_t step_masks_buf[PATTERN_MAX_STEPS];
 static int step_count, step_idx;
 static uint8_t active_duty;
 static bool step_is_on;
@@ -46,8 +46,8 @@ typedef struct {
     seq_msg_type_t type;
     uint8_t  intensity_pct;   // SEQ_MSG_PLAY only, already clamped 0..100
     int      n_steps;         // SEQ_MSG_PLAY only
-    uint8_t  step_masks[PATTERN_MAX_PAIRS]; // one mask per ON step
-    motor_step_t steps[PATTERN_MAX_PAIRS];  // timing for each ON/OFF step
+    uint8_t  step_masks[PATTERN_MAX_STEPS]; // one mask per ON step
+    motor_step_t steps[PATTERN_MAX_STEPS];  // timing for each ON/OFF step
 } seq_msg_t;
 
 static void motor_seq_task(void *arg);
@@ -255,10 +255,11 @@ static void handle_play(const seq_msg_t *m)
     step_idx    = 0;
     active_duty = intensity_to_duty(m->intensity_pct, 100);
     step_is_on  = false;
+    const uint8_t mask = m->step_masks[0];
     ESP_LOGI(TAG, "[MOTOR] L=%s R=%s duty=%u steps=%d",
-             (m->step_masks[0] & MOTOR_MASK_LEFT) && active_duty ? "ON" : "OFF",
-             (m->step_masks[0] & MOTOR_MASK_RIGHT) && active_duty ? "ON" : "OFF",
-             active_duty, step_count);
+             (mask & MOTOR_MASK_LEFT) ? "ON" : "off",
+             (mask & MOTOR_MASK_RIGHT) ? "ON" : "off",
+             (unsigned)active_duty, step_count);
     advance_step();   // fires the first ON immediately, for its full on_ms
 }
 
@@ -295,7 +296,7 @@ static void queue_pattern(const uint8_t *step_masks, uint8_t intensity_pct,
                           const motor_step_t *steps, int n_steps)
 {
     if (n_steps <= 0 || steps == NULL || step_masks == NULL) return;
-    if (n_steps > PATTERN_MAX_PAIRS) n_steps = PATTERN_MAX_PAIRS;
+    if (n_steps > PATTERN_MAX_STEPS) n_steps = PATTERN_MAX_STEPS;
     if (!seq_queue) {
         ESP_LOGE(TAG, "motor pattern requested before motor_init()");
         return;
@@ -311,7 +312,17 @@ static void queue_pattern(const uint8_t *step_masks, uint8_t intensity_pct,
         .type = SEQ_MSG_PLAY,
         .intensity_pct = intensity_pct, .n_steps = n_steps,
     };
-    memcpy(m.step_masks, step_masks, sizeof(uint8_t) * n_steps);
+    // A step that drives no motor would be an unexplained silent gap in the
+    // middle of an alert, so reject the whole pattern rather than play a
+    // pattern the wearer cannot interpret.
+    for (int i = 0; i < n_steps; i++) {
+        uint8_t mask = step_masks[i] & MOTOR_MASK_BOTH;
+        if (mask == 0) {
+            ESP_LOGE(TAG, "step %d drives no motor; pattern rejected", i);
+            return;
+        }
+        m.step_masks[i] = mask;
+    }
     memcpy(m.steps, steps, sizeof(motor_step_t) * n_steps);
 
     // motor_seq_task owns execution; this API only queues the command.
@@ -323,12 +334,13 @@ void motor_play_pattern(uint8_t motor_mask, uint8_t intensity_pct,
                         const motor_step_t *steps, int n_steps)
 {
     if (n_steps <= 0 || steps == NULL) return;
-    if (n_steps > PATTERN_MAX_PAIRS) n_steps = PATTERN_MAX_PAIRS;
+    if (n_steps > PATTERN_MAX_STEPS) n_steps = PATTERN_MAX_STEPS;
 
-    uint8_t step_masks[PATTERN_MAX_PAIRS];
+    uint8_t step_masks[PATTERN_MAX_STEPS];
     for (int i = 0; i < n_steps; i++) step_masks[i] = motor_mask & MOTOR_MASK_BOTH;
     queue_pattern(step_masks, intensity_pct, steps, n_steps);
 }
+
 
 void motor_stop_pattern(void)
 {

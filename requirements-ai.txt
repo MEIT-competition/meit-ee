@@ -1,0 +1,9 @@
+# Only needed for the standalone/bench runtime in laptop/ai_motor_bridge.py,
+# which loads meit-ai directly. The primary runtime (laptop/ios_motor_bridge.py)
+# does NOT need these: the meit-ios bridge already ran the model.
+#
+# TensorFlow itself is intentionally NOT pinned here -- install whatever the
+# meit-ai checkout's own requirements specify, so EE never dictates the model's
+# runtime version.
+-r requirements.txt
+numpy>=1.24

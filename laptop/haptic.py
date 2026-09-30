@@ -1,57 +1,64 @@
 """Turn one AI result into one motor command.
 
 This module is the whole point of the EE side: everything upstream produces
-*information* (which direction, which danger class, how confident) and the belt
-can only produce *sensation*.  This is where the translation happens, and it is
+*information* (which direction, which danger class, how loud) and the belt can
+only produce *sensation*. This is where the translation happens, and it is
 deliberately pure — no BLE, no HTTP, no clock — so the mapping can be reasoned
 about and unit-tested on its own.
 
 The encoding, in one sentence
 ----------------------------
 **Where you feel it says where the sound is; how many times you feel it says
-what the sound was; how hard you feel it says how sure the AI is.**
+what the sound was; how hard you feel it says how loud it was.**
 
-Direction -> which motors, in what order
-    ======== ====================================== =========================
-    ``left``   left motor only                        one-sided
-    ``right``  right motor only                       one-sided
-    ``front``  both motors together                   symmetric, instantaneous
-    ``back``   left then right, seamlessly            a sweep passing by
-    ======== ====================================== =========================
+Direction -> which motors
+    ========== ============================ =========================
+    ``left``     left motor only              one-sided
+    ``right``    right motor only             one-sided
+    ``center``   both motors together         not to either side
+    ========== ============================ =========================
 
-    ``front`` and ``back`` are both "not to one side", so they cannot be told
-    apart spatially with two actuators.  They are told apart *temporally*
-    instead: ``front`` arrives as one symmetric event, ``back`` travels across
-    the body.  A sweep away from the wearer's facing direction is the natural
-    reading of "it came from behind you".
+    Those are the three directions iOS stereo reports
+    (``StereoDirectionEstimator.swift``). There is no rear cue: a stereo pair
+    cannot separate front from back, and the system has no rear sensor, so
+    inventing a fourth sensation would claim resolution the input does not have.
+
+    ``unavailable`` means iOS's own margin gate was not satisfied. The belt stays
+    **silent** rather than buzzing vaguely — a directionless alert teaches the
+    wearer to ignore the belt, which is worse than missing one event.
 
 Danger class -> how many pulses
-    ``crash`` one long pulse, ``horn`` two, ``siren`` three.  Pulse count is
-    the most robust haptic channel there is: it survives a loose belt, thick
-    clothing and a wearer who is walking.  Waveform subtleties do not.
+    ``crash`` one long pulse, ``horn`` two, ``siren`` three. Pulse count is the
+    most robust haptic channel there is: it survives a loose belt, thick clothing
+    and a wearer who is walking. Waveform subtleties do not.
 
-Confidence -> PWM duty
-    A low-confidence alert still fires — suppressing a real hazard is the worse
-    error — but it is felt as less urgent.
+    ``meit-ai``'s own ``decision/patterns.py`` independently uses the same
+    counts, so this matches what the AI team designed; only the timings are
+    stretched to what a coin motor can actually render.
 
-Because the two axes use different channels (spatial/ordering vs. count) they
-compose without interfering: "siren from the left" is three left-only pulses,
-"siren from behind" is three sweeps.
+Loudness -> PWM duty
+    Following ``meit-ai``'s deliberate rule that confidence decides *whether* to
+    alert and dBFS decides *how hard*. A low-confidence alert still fires —
+    suppressing a real hazard is the worse error — but a faint one is felt as
+    less urgent than a close one.
+
+Because the cues use different channels (which motor vs. how many pulses vs. how
+hard) they compose without interfering: "siren from the left" is three left-only
+pulses.
 """
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from laptop.protocol import (
-    DIR_BACK,
-    DIR_FRONT,
+    DIR_CENTER,
     DIR_LEFT,
     DIR_RIGHT,
     DIR_STOP,
-    MASK_BOTH,
     MASK_LEFT,
     MASK_RIGHT,
     PATTERN_MAX_STEPS,
@@ -62,14 +69,13 @@ from laptop.protocol import (
     direction_name,
 )
 
-# The three classes meit-ios alerts on.  meit-ai's CLASSES may be larger (it
-# also reports e.g. `normal`); anything outside this set must stay silent.
+# The three classes the belt alerts on. meit-ai's CLASSES is larger — it also
+# reports `normal` — and anything outside this set must stay silent.
 DANGER_LABELS: Tuple[str, ...] = ("horn", "siren", "crash")
 
-# An ERM/coin vibration motor needs roughly 50-80 ms to spin up to a
-# perceptible amplitude, so a burst shorter than this is felt as nothing at all
-# rather than as a short pulse.  Every emitted step, including the halves of a
-# BACK sweep, is checked against this floor.
+# An ERM/coin vibration motor needs roughly 50-80 ms to spin up to a perceptible
+# amplitude, so a burst shorter than this is felt as nothing at all rather than
+# as a short pulse. Every emitted step is checked against this floor.
 MIN_STEP_ON_MS = 100
 
 DEFAULT_PROFILE_PATH = Path(__file__).with_name("haptic_profile.json")
@@ -81,13 +87,7 @@ class HapticError(ValueError):
 
 @dataclass(frozen=True)
 class ClassProfile:
-    """How one danger class is rendered.
-
-    ``on_ms`` is the length of a whole pulse.  For a BACK sweep the pulse is
-    split in half between the two motors, so ``on_ms`` must be a multiple of
-    ``2 * STEP_TIME_UNIT_MS`` for both halves to stay on the 10 ms wire grid,
-    and each half must still clear :data:`MIN_STEP_ON_MS`.
-    """
+    """How one danger class is rendered."""
 
     pulses: int
     on_ms: int
@@ -100,22 +100,16 @@ class ClassProfile:
             raise HapticError(f"class {label!r}: {message}")
 
         if not 1 <= self.pulses <= PATTERN_MAX_STEPS:
-            fail(f"pulses must be 1..{PATTERN_MAX_STEPS} (got {self.pulses})")
-        # A BACK sweep spends two steps per pulse, and that is the widest case,
-        # so validating it here means no direction can overflow the pattern.
-        if self.pulses * 2 > PATTERN_MAX_STEPS:
-            fail(f"pulses must be <= {PATTERN_MAX_STEPS // 2} so a BACK sweep still fits "
-                 f"in {PATTERN_MAX_STEPS} steps (got {self.pulses})")
-        if self.on_ms % (2 * STEP_TIME_UNIT_MS):
-            fail(f"on_ms must be a multiple of {2 * STEP_TIME_UNIT_MS} ms so a BACK sweep "
-                 f"splits evenly (got {self.on_ms})")
-        if self.gap_ms % STEP_TIME_UNIT_MS:
-            fail(f"gap_ms must be a multiple of {STEP_TIME_UNIT_MS} ms (got {self.gap_ms})")
+            fail(f"pulses must be 1..{PATTERN_MAX_STEPS} to fit one BLE packet "
+                 f"(got {self.pulses})")
+        if self.on_ms % STEP_TIME_UNIT_MS or self.gap_ms % STEP_TIME_UNIT_MS:
+            fail(f"on_ms and gap_ms must be multiples of {STEP_TIME_UNIT_MS} ms "
+                 f"(got {self.on_ms}/{self.gap_ms})")
         if self.gap_ms < 0:
             fail("gap_ms must not be negative")
-        if self.on_ms // 2 < MIN_STEP_ON_MS:
-            fail(f"on_ms must be >= {2 * MIN_STEP_ON_MS} ms so each half of a BACK sweep "
-                 f"is still perceptible (got {self.on_ms})")
+        if self.on_ms < MIN_STEP_ON_MS:
+            fail(f"on_ms must be >= {MIN_STEP_ON_MS} ms to be perceptible on a coin "
+                 f"motor (got {self.on_ms})")
         if not 1 <= self.min_intensity <= self.max_intensity <= 100:
             fail("intensities must satisfy 1 <= min <= max <= 100 "
                  f"(got {self.min_intensity}..{self.max_intensity})")
@@ -130,10 +124,10 @@ class HapticProfile:
     """The complete, tunable mapping.
 
     ``confidence_floor``/``confidence_ceiling`` bracket the range over which
-    confidence is mapped onto the class intensity range.  The floor is not zero
-    because a 3-to-5-class softmax rarely goes below chance level, and treating
-    chance-level output as "barely vibrate" would waste most of the dynamic
-    range on values that never occur.
+    confidence is mapped onto the class intensity range, for the paths that have
+    no measured loudness. The floor is not zero because a small softmax rarely
+    goes below chance level, and treating chance-level output as "barely vibrate"
+    would waste most of the dynamic range on values that never occur.
     """
 
     classes: Mapping[str, ClassProfile]
@@ -149,8 +143,7 @@ class HapticProfile:
         for label, entry in self.classes.items():
             entry.validate(label)
         if not 0.0 <= self.confidence_floor < self.confidence_ceiling <= 1.0:
-            raise HapticError("confidence bounds must satisfy "
-                              "0 <= floor < ceiling <= 1 "
+            raise HapticError("confidence bounds must satisfy 0 <= floor < ceiling <= 1 "
                               f"(got {self.confidence_floor}..{self.confidence_ceiling})")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -194,22 +187,17 @@ class HapticProfile:
         return cls.from_dict(json.loads(text))
 
 
-# Timings below were chosen against the two constraints that actually bite:
-# a coin motor's spin-up time (hence no pulse under 100 ms, and 250/120/130 ms
-# sweep halves) and the 6-step packet budget (hence at most 3 pulses).
+# Timings come from the two constraints that actually bite: a coin motor's
+# spin-up time (hence no pulse under 100 ms) and the packet budget (hence at most
+# 4 pulses). Intensity floors are high because the firmware caps duty at ~47 % to
+# keep a 3 V motor safe on a 6.4 V rail, and bench testing on the real belt found
+# ~28 % duty cannot be felt while ~47 % can — leaving only ~37-46 % usable.
 #
 #   crash  one 500 ms pulse                     -> "bang", the most urgent
 #   horn   two 240 ms pulses, 140 ms apart      -> "beep-beep"
 #   siren  three 260 ms pulses, 150 ms apart    -> "wee-oo-wee"
 DEFAULT_PROFILE = HapticProfile(
     classes={
-        # Floors raised so even a low-confidence alert clears the belt's
-        # perceptibility threshold on the bench: duty is capped at ~47 % by the
-        # firmware (3 V motor on a 6.4 V rail), and testing showed ~28 % duty is
-        # not felt while ~47 % is. Keeping every class's minimum near the top of
-        # the allowed range means no pattern comes out too weak to notice.
-        # Class is carried by the pulse count, not by intensity, so raising all
-        # three does not blur which sound it is.
         "crash": ClassProfile(pulses=1, on_ms=500, gap_ms=0,
                               min_intensity=88, max_intensity=100),
         "horn": ClassProfile(pulses=2, on_ms=240, gap_ms=140,
@@ -224,62 +212,80 @@ DEFAULT_PROFILE.validate()
 
 
 # --------------------------------------------------------------- intensity map
-def intensity_for(entry: ClassProfile, confidence: float,
-                  profile: HapticProfile = DEFAULT_PROFILE) -> int:
-    """Map confidence onto the class's PWM-percent range.
+# Mirrors the bounds in meit-ai's `decision/intensity.py`, whose deliberate
+# choice is that loudness — not confidence — sets how hard the belt buzzes
+# ("세기는 dBFS만으로 결정. 확신도는 알릴지 말지만 판단한다").
+#
+# meit-ai maps this dB range onto 40..100 percent. That is not usable here: its
+# 40 % would land at ~18 % duty, which bench testing showed is not felt at all.
+# The range is mapped onto each class's belt-tested band instead, keeping
+# meit-ai's loudness response while staying perceptible.
+DBFS_QUIET = -40.0
+DBFS_LOUD = -10.0
 
-    Non-finite or missing confidence degrades to the class minimum rather than
-    raising: a hazard that the AI reported is still worth feeling even if its
-    confidence field arrived malformed.
-    """
+
+def _fraction(value: float, low: float, high: float) -> float:
+    """Position of ``value`` in ``low..high``, clamped, 0.0 for unusable input."""
     try:
-        value = float(confidence)
+        number = float(value)
     except (TypeError, ValueError):
-        value = 0.0
-    if value != value or value in (float("inf"), float("-inf")):  # NaN / +-inf
-        value = 0.0
+        return 0.0
+    if not math.isfinite(number) or high <= low:
+        return 0.0
+    return min(1.0, max(0.0, (number - low) / (high - low)))
 
-    span = profile.confidence_ceiling - profile.confidence_floor
-    fraction = (value - profile.confidence_floor) / span
-    fraction = min(1.0, max(0.0, fraction))
+
+def _scale_into(entry: ClassProfile, fraction: float) -> int:
     reach = entry.max_intensity - entry.min_intensity
     return int(round(entry.min_intensity + fraction * reach))
 
 
-# ------------------------------------------------------------- pattern builder
-def _steps_for(direction: int, entry: ClassProfile) -> Tuple[MotorStep, ...]:
-    """Lay the class rhythm out over the motors the direction selects."""
-    if direction == DIR_BACK:
-        # Each pulse becomes left-half then right-half with no gap between
-        # them, so one pulse is felt as a single burst travelling across the
-        # body rather than as two separate taps.
-        half = entry.on_ms // 2
-        steps: List[MotorStep] = []
-        for index in range(entry.pulses):
-            last = index == entry.pulses - 1
-            steps.append(MotorStep(mask=MASK_LEFT, on_ms=half, off_ms=0))
-            steps.append(MotorStep(mask=MASK_RIGHT, on_ms=half,
-                                   off_ms=0 if last else entry.gap_ms))
-        return tuple(steps)
+def intensity_from_dbfs(entry: ClassProfile, dbfs: float,
+                        quiet_dbfs: float = DBFS_QUIET,
+                        loud_dbfs: float = DBFS_LOUD) -> int:
+    """Map measured loudness onto the class's intensity band.
 
-    mask = {DIR_LEFT: MASK_LEFT, DIR_RIGHT: MASK_RIGHT, DIR_FRONT: MASK_BOTH}.get(direction)
-    if mask is None:
-        raise HapticError(f"no pattern for direction {direction!r}")
+    Unusable input (``None``, ``NaN``, ``-inf`` for digital silence) degrades to
+    the class minimum rather than raising: meit-ai's ``judge()`` has already
+    decided this is worth alerting about, so it must still be felt.
+    """
+    return _scale_into(entry, _fraction(dbfs, quiet_dbfs, loud_dbfs))
+
+
+def intensity_for(entry: ClassProfile, confidence: float,
+                  profile: HapticProfile = DEFAULT_PROFILE) -> int:
+    """Map confidence onto the class's PWM-percent range.
+
+    Used where no loudness is available. Malformed confidence degrades to the
+    class minimum rather than raising, for the same reason as above.
+    """
+    return _scale_into(entry, _fraction(confidence, profile.confidence_floor,
+                                        profile.confidence_ceiling))
+
+
+# ------------------------------------------------------------- pattern builder
+def _steps_for(entry: ClassProfile) -> Tuple[MotorStep, ...]:
+    """The class rhythm: ``pulses`` bursts with a gap between, none after."""
     return tuple(
-        MotorStep(mask=mask, on_ms=entry.on_ms,
+        MotorStep(on_ms=entry.on_ms,
                   off_ms=0 if index == entry.pulses - 1 else entry.gap_ms)
         for index in range(entry.pulses)
     )
 
 
 def build_command(label: str, confidence: float, direction: int,
-                  profile: HapticProfile = DEFAULT_PROFILE) -> Optional[MotorCommand]:
+                  profile: HapticProfile = DEFAULT_PROFILE, *,
+                  dbfs: Optional[float] = None) -> Optional[MotorCommand]:
     """Build the motor command for one AI result, or ``None`` to stay silent.
 
-    ``None`` is returned — meaning *send nothing at all*, not *send STOP* — for
-    a non-danger label, an unknown class, or ``DIR_STOP``.  ``DIR_STOP`` here
-    means iOS could not settle on a direction, and a directionless buzz would
-    train the wearer to ignore the belt.
+    ``None`` is returned — meaning *send nothing at all*, not *send STOP* — for a
+    non-danger label, an unknown class, or ``DIR_STOP``. ``DIR_STOP`` here means
+    iOS could not settle on a direction.
+
+    ``dbfs`` selects which channel drives intensity. Pass the loudness meit-ai
+    measured and the belt follows meit-ai's own rule; leave it ``None`` — as the
+    ``/auto/status`` path must, since it publishes no dB — and confidence drives
+    it instead. Either way the value lands inside the class's belt-tested band.
     """
     if direction == DIR_STOP:
         return None
@@ -290,21 +296,21 @@ def build_command(label: str, confidence: float, direction: int,
     if entry is None:
         return None
 
-    steps = _steps_for(direction, entry)
+    steps = _steps_for(entry)
     for step in steps:
         if step.on_ms < MIN_STEP_ON_MS:
             raise HapticError(f"class {key!r} would emit a {step.on_ms} ms burst, below the "
                               f"{MIN_STEP_ON_MS} ms perceptibility floor")
-    return MotorCommand(direction=direction,
-                        intensity=intensity_for(entry, confidence, profile),
-                        steps=steps)
+    intensity = (intensity_from_dbfs(entry, dbfs) if dbfs is not None
+                 else intensity_for(entry, confidence, profile))
+    return MotorCommand(direction=direction, intensity=intensity, steps=steps)
 
 
 def with_intensity_scale(command: MotorCommand, scale: float) -> MotorCommand:
     """Scale a command's intensity, clamped to the legal 1..100 range.
 
-    Used by the ``--intensity-scale`` knob so a demo can be turned down for a
-    quiet room, or up for a thick jacket, without editing the profile.
+    Used by ``--intensity-scale`` so a demo can be turned down for a quiet room,
+    or up through a thick jacket, without editing the profile.
     """
     if command.is_stop:
         return command
@@ -316,40 +322,43 @@ def with_intensity_scale(command: MotorCommand, scale: float) -> MotorCommand:
 def render_timeline(command: MotorCommand, *, columns_per_100ms: int = 2) -> str:
     """ASCII timeline of a pattern, for bench-testing without hardware.
 
-    ``#`` marks a motor running.  Two rows, left motor above right, so a BACK
-    sweep visibly staircases and a FRONT pulse visibly lines up.
+    ``#`` marks a motor running. Two rows, left motor above right, so a CENTER
+    pulse visibly lines up and a one-sided one visibly does not.
     """
     if command.is_stop:
         return "STOP (both motors off)"
 
     unit_ms = 100 // columns_per_100ms if columns_per_100ms else 50
+    mask = command.mask
     rows = {MASK_LEFT: ["L |"], MASK_RIGHT: ["R |"]}
     for step in command.steps:
         on_cols = max(1, round(step.on_ms / unit_ms))
         off_cols = round(step.off_ms / unit_ms)
         for bit, row in rows.items():
-            row.append(("#" if step.mask & bit else ".") * on_cols)
+            row.append(("#" if mask & bit else ".") * on_cols)
             row.append("." * off_cols)
     header = f"{command.describe()}  ({unit_ms} ms per column)"
     return "\n".join([header, "".join(rows[MASK_LEFT]), "".join(rows[MASK_RIGHT])])
 
 
 def explain(label: str, confidence: float, direction: int,
-            profile: HapticProfile = DEFAULT_PROFILE) -> str:
+            profile: HapticProfile = DEFAULT_PROFILE, *,
+            dbfs: Optional[float] = None) -> str:
     """One human-readable line describing what the wearer will feel."""
-    command = build_command(label, confidence, direction, profile)
+    command = build_command(label, confidence, direction, profile, dbfs=dbfs)
     if command is None:
         return f"suppressed (label={label!r} direction={direction})"
     entry = profile.classes[str(label).strip().lower()]
     where = {DIR_LEFT: "on the left motor", DIR_RIGHT: "on the right motor",
-             DIR_FRONT: "on both motors together",
-             DIR_BACK: "as a left-to-right sweep"}[direction]
+             DIR_CENTER: "on both motors together"}[direction]
     return (f"{direction_name(direction)}/{label}: {entry.pulses} pulse(s) {where}, "
             f"{command.intensity}% duty, {command.duration_ms} ms total")
 
 
 __all__ = [
     "DANGER_LABELS",
+    "DBFS_LOUD",
+    "DBFS_QUIET",
     "DEFAULT_PROFILE",
     "DEFAULT_PROFILE_PATH",
     "MIN_STEP_ON_MS",
@@ -360,6 +369,7 @@ __all__ = [
     "build_command",
     "explain",
     "intensity_for",
+    "intensity_from_dbfs",
     "render_timeline",
     "with_intensity_scale",
 ]

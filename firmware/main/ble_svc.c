@@ -13,6 +13,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "config.h"
+#include "cmd_parse.h"
 #include "ble_svc.h"
 
 static const char *TAG = "ble";
@@ -28,6 +29,8 @@ static const ble_uuid128_t CHR_CMD_UUID =
 static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static ble_cmd_cb_t cmd_cb = NULL;
 
+// GATT write handler. Byte-level validation lives in cmd_parse.c so it can be
+// host-tested without ESP-IDF; this function is only transport.
 static int cmd_write_cb(uint16_t ch, uint16_t vh,
                         struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -35,47 +38,36 @@ static int cmd_write_cb(uint16_t ch, uint16_t vh,
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR)
         return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
 
-    uint8_t buf[6 + 2 * PATTERN_MAX_PAIRS] = {0};
+    // Zero-initialised so a short packet can never expose stack bytes to the
+    // parser, even though cmd_parse only reads inside the declared length.
+    uint8_t buf[CMD_HEADER + 2 * PATTERN_MAX_STEPS] = {0};
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    if (len < 6 || len > sizeof(buf))
+    if (len < CMD_HEADER || len > sizeof(buf))
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     if (ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL) != 0)
         return BLE_ATT_ERR_UNLIKELY;
 
-    if (buf[0] != CMD_MAGIC || buf[1] != CMD_VERSION) {
-        ESP_LOGW(TAG, "reject CMD magic/version %02x/%02x", buf[0], buf[1]);
-        return BLE_ATT_ERR_UNLIKELY;
-    }
-
-    uint8_t sequence = buf[2];
-    uint8_t direction = buf[3];
-    uint8_t intensity = buf[4];
-    uint8_t n = buf[5];
-
-    if (direction > CMD_DIR_RIGHT || intensity > 100 || n > PATTERN_MAX_PAIRS)
-        return BLE_ATT_ERR_UNLIKELY;
-    if ((uint16_t)(6 + 2 * n) != len)
+    cmd_packet_t packet;
+    switch (cmd_parse(buf, len, &packet)) {
+    case CMD_PARSE_OK:
+        break;
+    case CMD_PARSE_BAD_LENGTH:
+        ESP_LOGW(TAG, "reject CMD: bad length %u", (unsigned)len);
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-
-    // STOP is the only legal zero-pattern command.
-    if (direction == CMD_DIR_STOP) {
-        if (n != 0 || intensity != 0)
-            return BLE_ATT_ERR_UNLIKELY;
-        if (cmd_cb) cmd_cb(sequence, direction, 0, NULL, 0);
-        return 0;
-    }
-    if (n == 0)
+    default:
+        // len >= CMD_HEADER here, so buf[1] and buf[3] are always populated.
+        ESP_LOGW(TAG, "reject CMD: malformed (len=%u ver=%02x dir=%u)",
+                 (unsigned)len, (unsigned)buf[1], (unsigned)buf[3]);
         return BLE_ATT_ERR_UNLIKELY;
-
-    motor_step_t steps[PATTERN_MAX_PAIRS];
-    for (int i = 0; i < n; i++) {
-        uint8_t on10 = buf[6 + 2 * i];
-        uint8_t off10 = buf[7 + 2 * i];
-        if (on10 == 0) return BLE_ATT_ERR_UNLIKELY;
-        steps[i].on_ms = (uint16_t)on10 * 10;
-        steps[i].off_ms = (uint16_t)off10 * 10;
     }
-    if (cmd_cb) cmd_cb(sequence, direction, intensity, steps, n);
+
+    if (cmd_cb) {
+        if (cmd_is_stop(&packet))
+            cmd_cb(packet.sequence, packet.direction, 0, 0, NULL, 0);
+        else
+            cmd_cb(packet.sequence, packet.direction, packet.intensity,
+                   packet.mask, packet.steps, packet.n_steps);
+    }
     return 0;
 }
 
@@ -112,7 +104,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         // Fail-safe: a dropped laptop connection must not leave a long
         // haptic pattern running. A normal command pattern is finite, but
         // stopping here makes disconnect behavior deterministic.
-        if (cmd_cb) cmd_cb(0, CMD_DIR_STOP, 0, NULL, 0);
+        if (cmd_cb) cmd_cb(0, CMD_DIR_STOP, 0, 0, NULL, 0);
         ESP_LOGI(TAG, "disconnected; motors stopped; advertising again");
         start_advertising();
         return 0;

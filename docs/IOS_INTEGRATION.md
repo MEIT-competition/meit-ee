@@ -1,27 +1,27 @@
 # meit-ios integration contract
 
-Reference repository: https://github.com/MEIT-competition/meit-ios
+Reference repository: <https://github.com/MEIT-competition/meit-ios>
 
-Verified against public `main` on 2026-09-30. This EE change does **not** modify iOS source.
+Verified against public `main` on 2026-09-30. **No iOS source is modified.** EE
+consumes the existing laptop-bridge interface.
 
-## Endpoint used by EE
-
-The Windows bridge exposes:
+## Endpoint EE consumes
 
 ```text
 GET http://127.0.0.1:8765/auto/status
 ```
 
-EE only consumes the automatic-event status. Relevant fields are:
+Only the automatic-event status is used. The fields EE reads:
 
 ```json
 {
   "last_event": {
-    "event_id": "...",
+    "event_id": "uuid",
     "outcome": "completed",
-    "direction": "LEFT|RIGHT|FRONT|BACK|CENTER|UNKNOWN|...",
+    "direction": "left|center|right|unavailable",
+    "direction_margin_db": 4.2,
     "result": {
-      "label": "horn|siren|crash|...",
+      "label": "horn|siren|crash|normal|...",
       "confidence": 0.0,
       "danger": true
     }
@@ -29,19 +29,75 @@ EE only consumes the automatic-event status. Relevant fields are:
 }
 ```
 
-The bridge sends a vibration command only when:
+`direction` is the **trigger-time** direction, and EE prefers it over any live
+direction elsewhere in the response. The wearer must be told where the sound
+*was*, not where the loudest phone is now. `result.direction` is used only as a
+fallback when the event-level field is absent.
 
-1. `last_event` exists,
+`direction_margin_db` is read for logging only. EE does **not** apply its own
+direction gate: the bridge already reports `unknown` whenever its role/margin
+conditions are not met, so re-gating here would double-suppress.
+
+## When a vibration is sent
+
+All of these must hold:
+
+1. `last_event` exists and is an object,
 2. `outcome == "completed"`,
-3. AI label is one of `horn`, `siren`, `crash`,
-4. `danger` is not false,
-5. direction normalizes to LEFT/CENTER/RIGHT, and
-6. the event has not already been successfully delivered to the ESP32.
+3. `result.danger` is not `false` — this is `meit-ai`'s decision-layer verdict,
+4. `result.label` is one of `horn`, `siren`, `crash`,
+5. `direction` normalizes to `left`, `center` or `right`, and
+6. the `event_id` has not already been delivered successfully.
 
-## Why polling is deduplicated
+Anything else is **logged with its reason** and consumed without a write. Silent
+drops were removed deliberately: at a demo, "the belt did nothing" has to be
+explainable from the log.
 
-`/auto/status` keeps the latest completed event. Therefore an event ID must be remembered locally; otherwise a 100 ms polling loop would replay the same vibration continuously.
+## Why polling needs a cursor
+
+`/auto/status` retains its most recent event indefinitely. Polling it every 100 ms
+without remembering anything would replay the same vibration continuously.
+
+EE stores the last successfully delivered `event_id`, and:
+
+- the **first** successful read adopts whatever is already retained, so starting
+  the bridge never fires for a hazard from before it was running;
+- the cursor advances only **after** the GATT write succeeds, so a write that fails
+  mid-drop leaves the event eligible for retry after reconnecting;
+- a **suppressed** event is consumed immediately, since no write is needed and
+  re-evaluating it every poll would only flood the log.
+
+## Three directions, two motors
+
+`StereoDirectionEstimator.swift` reports `left`, `right`, `center` or
+`unavailable`, and the belt renders each directly:
+
+| iOS | Belt rendering |
+|---|---|
+| `left` / `right` | that motor only |
+| `center` | both motors, simultaneously |
+| `unavailable` | silent |
+
+There is no rear cue, because a stereo pair cannot separate front from back and
+the system has no rear sensor. A direction of `back` is therefore suppressed like
+`unavailable`, rather than being rendered as something it does not mean. See
+[`HAPTIC_DESIGN.md`](HAPTIC_DESIGN.md).
 
 ## Compatibility policy
 
-The iOS team can continue updating `main`. As long as `/auto/status` preserves the fields above or the native direction becomes `left/center/right`, EE does not require an iOS code change. If the endpoint schema changes, update only `laptop/ios_motor_bridge.py` and its tests.
+The iOS team can keep changing `main`. As long as `/auto/status` keeps the fields
+above, EE needs no change. If the schema moves, only
+[`laptop/ios_motor_bridge.py`](../laptop/ios_motor_bridge.py) (`extract_event`) and
+its tests need editing — not the haptic mapping, not the BLE protocol, not the
+firmware.
+
+`normalize_direction` accepts `center`, `centre` and `front` as well as
+`left`/`right`, so a change in how iOS spells the straight-ahead case needs no EE
+change either.
+
+## Where inference runs
+
+In the `meit-ios` bridge, not here — it loads `meit-ai` itself and publishes the
+verdict. EE deliberately does not re-run the model. For the cases where EE does
+need its own inference (bench replay, or an AI-less iOS bridge), see
+[`AI_INTEGRATION.md`](AI_INTEGRATION.md).

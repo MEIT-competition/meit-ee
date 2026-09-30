@@ -1,20 +1,41 @@
-name: Python tests
+name: tests
 
 on:
   push:
   pull_request:
 
 jobs:
-  test:
+  laptop:
+    name: Laptop unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # The laptop package is stdlib-only apart from bleak, and none of the tests
+      # touch a Bluetooth adapter, so the whole suite runs on a clean runner.
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      # The meit-ai integration tests skip themselves without MEIT_AI_PATH and a
+      # TensorFlow install, so the suite stays green on a clean runner.
       - name: Unit tests
-        run: python -m unittest laptop.test_ios_motor_bridge -v
+        run: python -m unittest discover -s laptop -p "test_*.py" -t . -v
       - name: Syntax check
         run: python -m compileall -q laptop
+
+  firmware:
+    name: Firmware host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # No ESP-IDF and no board: the parser and the pattern sequencer are
+      # compiled with the runner's cc against stubs, so firmware regressions are
+      # caught here rather than on the bench.
+      - name: CMD parser vs. the Python encoder
+        run: python firmware/tests/run_cmd_parse_tests.py
+      - name: Motor sequencer on a virtual clock
+        run: python firmware/tests/run_motor_host_tests.py

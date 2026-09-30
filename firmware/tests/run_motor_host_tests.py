@@ -1,4 +1,4 @@
-"""Compile the real motor.c against deterministic RTOS/timer/LEDC stubs.
+"""Compile the real firmware/main/motor.c against deterministic RTOS/timer/LEDC stubs.
 
 Run: python run_motor_host_tests.py --cc gcc
 Or:  python run_motor_host_tests.py --cc /path/to/zig --zig
@@ -9,6 +9,9 @@ import argparse
 import pathlib
 import subprocess
 import tempfile
+
+# Keep in step with the `names` array in motor_host_test.c.
+CASE_COUNT = 14
 
 STUB = r'''
 #ifndef HOST_STUB_H
@@ -33,9 +36,14 @@ typedef void *esp_timer_handle_t;
 #endif
 #define pdMS_TO_TICKS(ms) ((ms) * configTICK_RATE_HZ / 1000)
 #define ESP_ERROR_CHECK(x) do { if ((x) != ESP_OK) abort(); } while (0)
-#define ESP_LOGI(tag,...) ((void)(tag))
-#define ESP_LOGW(tag,...) ((void)(tag))
-#define ESP_LOGE(tag,...) ((void)(tag))
+/* Consume the arguments instead of discarding them: a macro that drops them
+   makes every variable used only for logging look unused under -Werror, and it
+   also hides genuine printf-format mistakes from this build. */
+static inline void host_log_sink(const char *tag, const char *fmt, ...)
+{ (void)tag; (void)fmt; }
+#define ESP_LOGI(tag,...) host_log_sink(tag, __VA_ARGS__)
+#define ESP_LOGW(tag,...) host_log_sink(tag, __VA_ARGS__)
+#define ESP_LOGE(tag,...) host_log_sink(tag, __VA_ARGS__)
 @GPIO_NUMS@
 #define LEDC_LOW_SPEED_MODE 0
 #define LEDC_TIMER_8_BIT 8
@@ -92,13 +100,13 @@ def main():
             subprocess.run(command, check=True)
             print(f'RTOS tick rate: {hz} Hz; source: {source}', flush=True)
             passed = 0
-            for case in range(13):
+            for case in range(CASE_COUNT):
                 run = subprocess.run([str(exe), str(case)], timeout=30)
                 passed += run.returncode == 0
                 if run.returncode:
                     print(f'Case {case}: exit={run.returncode}', flush=True)
                     result = 1
-            print(f'RESULT: {passed}/13 passed at {hz} Hz', flush=True)
+            print(f'RESULT: {passed}/{CASE_COUNT} passed at {hz} Hz', flush=True)
     return result
 
 if __name__ == '__main__':

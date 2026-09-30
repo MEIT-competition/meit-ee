@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <setjmp.h>
+#include "cmd_parse.h"   // CMD_DIR_* used by the direction cases
 #include "motor_under_test.c"
 
 static int64_t now_us, timer_due;
@@ -109,7 +110,19 @@ static void expect_a(void) { CHECK(outputs==1); }
 static void burst(void) { play(1,100); play(2,100); play(3,100); play(2,200); }
 static void burst_and_tick(void) { burst(); motor_timer_cb(NULL); }
 static void expect_last(void) { CHECK(outputs==2); }
-static void play_unknown(void) { motor_play_unknown_pattern(80); }
+// A two-pulse pattern with a gap, the shape every alert actually uses.
+static void play_two_pulses(void)
+{
+    static const motor_step_t s[2]={{100,100},{100,0}};
+    motor_play_pattern(MOTOR_MASK_BOTH,80,s,2);
+}
+// A mask selecting no motor would be a pattern the wearer cannot interpret, so
+// the whole thing must be refused rather than played silently.
+static void play_zero_mask(void)
+{
+    static const motor_step_t s[2]={{100,0},{100,0}};
+    motor_play_pattern(0,80,s,2);
+}
 static void expect_left(void)
 { CHECK(outputs==MOTOR_MASK_LEFT); CHECK(gpio_outputs==GPIO_BIT(MOTOR_LEFT_GPIO)); }
 static void expect_right(void)
@@ -118,9 +131,9 @@ static void expect_both(void)
 { CHECK(outputs==MOTOR_MASK_BOTH);
   CHECK(gpio_outputs==(GPIO_BIT(MOTOR_LEFT_GPIO)|GPIO_BIT(MOTOR_RIGHT_GPIO))); }
 static void expect_gpio_off(void) { CHECK(gpio_outputs==0); }
-static void play_left(void) { play(motor_mask_for_direction(DIR_WIRE_LEFT), 100); }
-static void play_right(void) { play(motor_mask_for_direction(DIR_WIRE_RIGHT), 100); }
-static void play_back(void) { play(motor_mask_for_direction(DIR_WIRE_BACK), 100); }
+static void play_left(void) { play(motor_mask_for_cmd_direction(CMD_DIR_LEFT), 100); }
+static void play_right(void) { play(motor_mask_for_cmd_direction(CMD_DIR_RIGHT), 100); }
+static void play_center(void) { play(motor_mask_for_cmd_direction(CMD_DIR_CENTER), 100); }
 static void overflow_ticks(void)
 { for(int i=0;i<SEQ_QUEUE_LEN+1;i++) motor_timer_cb(NULL); }
 static void expect_drop(void) { CHECK(dropped_ticks==1); CHECK(outputs==0); }
@@ -158,12 +171,14 @@ static void prepare(int kind)
         suppress_callbacks=1;
         at(0,play_a); at(110,burst_and_tick);
         at(120,expect_last); at(250,expect_last); at(350,expect_off); break;
-    case 9: // UNKNOWN is alternating L/R, distinct from simultaneous BACK.
-        at(0,play_unknown); at(10,expect_left); at(90,expect_off);
-        at(130,expect_right); at(210,expect_off); break;
+    case 9: // Two pulses on both motors, with the gap actually off.
+        at(0,play_two_pulses); at(10,expect_both); at(90,expect_both);
+        at(110,expect_off); at(210,expect_both); at(310,expect_off); break;
     case 10: at(0,play_left); at(10,expect_left); at(110,expect_gpio_off); break;
     case 11: at(0,play_right); at(10,expect_right); at(110,expect_gpio_off); break;
-    case 12: at(0,play_back); at(10,expect_both); at(110,expect_gpio_off); break;
+    case 12: // CENTER is both motors simultaneously.
+        at(0,play_center); at(10,expect_both); at(110,expect_gpio_off); break;
+    case 13: at(0,play_zero_mask); at(10,expect_idle); at(110,expect_gpio_off); break;
     }
 }
 int main(int argc, char **argv)
@@ -172,11 +187,12 @@ int main(int argc, char **argv)
     const char *names[]={"late_tick_after_drain", "inactive_tick", "tick_after_completion",
         "queue_full_and_lost_tick", "consecutive_play", "start_failure_and_tick",
         "four_pairs_and_end_tick", "duplicate_due_ticks", "full_play_queue",
-        "unknown_alternating", "left_only", "right_only", "back_both"};
+        "two_pulses_with_gap", "left_only", "right_only", "center_both",
+        "zero_mask_rejected"};
     int selected=argc>1?atoi(argv[1]):-1;
     if(selected<=0) printf("config.h: LEFT=GPIO%d RIGHT=GPIO%d\n",
                            MOTOR_LEFT_GPIO, MOTOR_RIGHT_GPIO);
-    for(int i=0;i<13;i++) {
+    for(int i=0;i<14;i++) {
         if(selected>=0 && i!=selected) continue;
         now_us=timer_due=0; hw_armed=fail_start=false; outputs=0; gpio_outputs=0;
         timer_starts=on_transitions=0;

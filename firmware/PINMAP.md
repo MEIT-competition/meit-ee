@@ -19,9 +19,15 @@ Current DRV8833 wiring assumption:
 
 Direction mapping:
 
-- `LEFT` -> GPIO21 only
-- `CENTER` -> GPIO21 + GPIO13 simultaneously
-- `RIGHT` -> GPIO13 only
-- `STOP` / invalid -> both off
+| Direction | GPIO21 (LEFT) | GPIO13 (RIGHT) |
+|---|---|---|
+| `LEFT` | on | off |
+| `CENTER` | on | on, simultaneously |
+| `RIGHT` | off | on |
+| `STOP` / invalid | off | off |
+
+Three directions, matching what iOS stereo reports. One motor mask applies to a
+whole pattern, so no per-step switching is involved. See
+[`../docs/HAPTIC_DESIGN.md`](../docs/HAPTIC_DESIGN.md).
 
 The old microphone/I2S/TDoA pin map is archived under `legacy/old_hardware_docs/` and must not be used for the current build.

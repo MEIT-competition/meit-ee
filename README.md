@@ -1,86 +1,213 @@
 # meit-ee
 
-MEIT 방향성 위험음 촉각 알림 시스템의 **EE / wearable output** 저장소입니다.
+The **EE / wearable-output** side of the MEIT directional hazard-sound haptic
+system: everything from "the AI decided something" to "the wearer feels it".
 
-현재 버전은 ESP32가 마이크를 직접 읽어 방향을 계산하지 않습니다. iPhone과 기존 `meit-ios` Windows bridge가 방향 및 AI 결과를 결정하고, 이 저장소의 laptop bridge가 최종 방향을 BLE로 ESP32에 전달합니다.
-
-## Current architecture
+The ESP32 does not listen and does not estimate direction. Four iPhones and the
+`meit-ios` laptop bridge do that, `meit-ai` classifies the sound, and this
+repository owns the last hop — deciding what the belt should feel like, and
+delivering it over BLE to two vibration motors.
 
 ```text
-iPhone(s)
-   -> Wi-Fi / HTTP
-meit-ios Windows bridge + existing meit-ai
-   -> GET /auto/status
-meit-ee laptop/ios_motor_bridge.py
-   -> BLE CMD v2
-ESP32-S3 (MEIT-BELT)
-   -> LEFT motor / RIGHT motor
+iPhone  (stereo mic -> left / center / right)
+   |  Wi-Fi
+   v
+meit-ai  (YAMNet + calibrated head + judge)   <- what the sound is, and whether it matters
+   |
+   v
+laptop/haptic.py                              <- THIS REPO: what the wearer should feel
+   |  BLE CMD v2
+   v
+ESP32-S3 "MEIT-BELT"                          <- THIS REPO: plays it
+   |
+   +--> LEFT motor  (GPIO21)
+   +--> RIGHT motor (GPIO13)
 ```
 
-**iOS source는 수정하지 않습니다.** 공개 `meit-ios` `main`의 기존 Windows bridge interface를 소비하는 구조입니다.
+Verified against the real `meit-ai` checkout: the model loads, classifies, and its
+`judge()` gates drive the belt end to end. See
+[`docs/AI_INTEGRATION.md`](docs/AI_INTEGRATION.md) for the contract and for which
+layer owns which decision.
 
-Reference: https://github.com/MEIT-competition/meit-ios
+Neither `meit-ios` nor `meit-ai` is modified or vendored here.
 
-## Direction behavior
+- iOS: <https://github.com/MEIT-competition/meit-ios>
+- AI: <https://github.com/MEIT-competition/meit-ai>
 
-| Final direction | LEFT motor | RIGHT motor |
-|---|---|---|
-| `LEFT` | vibration | off |
-| `CENTER` | vibration | vibration |
-| `RIGHT` | off | vibration |
-| unknown / unavailable | off | off |
+## What the wearer feels
 
-현재 iOS 호환을 위해 `front`와 `back`은 EE에서 `CENTER`로 정규화합니다. iOS가 이후 `left/center/right`를 직접 보내도록 업데이트되어도 EE protocol이나 ESP32 firmware는 그대로 사용할 수 있습니다.
+> **Where** you feel it = where the sound is.
+> **How many times** = what the sound was.
+> **How hard** = how sure the AI is.
 
-## Active repository layout
+| Direction (iOS stereo) | LEFT motor | RIGHT motor | | Class | Pulses |
+|---|---|---|---|---|---:|
+| `left` | ■ | | | `crash` | 1 long |
+| `right` | | ■ | | `horn` | 2 |
+| `center` | ■ | ■ *together* | | `siren` | 3 |
+| `unavailable` | — | — *(silent)* | | | |
+
+iOS stereo reports exactly these three, so `center` (both motors together) is the
+"not to either side" cue. There is no rear cue: a stereo pair cannot separate
+front from back, and the system has no rear sensor.
+
+**Loudness** sets the PWM duty, following meit-ai's own rule that confidence
+decides *whether* to alert and dBFS decides *how hard*. Full reasoning, timings and
+constraints: **[`docs/HAPTIC_DESIGN.md`](docs/HAPTIC_DESIGN.md)**.
+
+See it without any hardware:
+
+```bash
+python -m laptop.haptic_preview
+```
+
+## Quick start
+
+```bash
+# 0. dependencies
+python -m pip install -r requirements.txt
+
+# 1. does the encoding look right?  (no belt, no Bluetooth needed)
+python -m laptop.haptic_preview
+
+# 2. flash the belt
+cd firmware && idf.py set-target esp32s3 && idf.py build && idf.py -p COMx flash monitor
+
+# 3. is the hardware alive?  (no iPhone, no AI)
+python -m laptop.send_motor_test left   --raw
+python -m laptop.send_motor_test center --raw
+python -m laptop.send_motor_test right  --raw
+
+# 4. do the real alert patterns feel distinguishable?  (9 combinations)
+python -m laptop.send_motor_test all
+
+# 5. verify the whole back half at once, on the real belt
+python -m laptop.verify_pipeline --meit-ai /path/to/meit-ai
+
+# 6. run the live pipeline (meit-ios bridge running, Auto enabled in the app)
+python -m laptop.ios_motor_bridge
+```
+
+Step 5 is the one to reach for when you want a single answer to "does this
+actually work?". It runs the real model, plays each verdict on the belt, and tells
+you beforehand what you should feel — including the clips `meit-ai` rejects, where
+a belt that stays still is the pass.
+
+## Repository layout
 
 ```text
+laptop/
+  haptic.py             # AI result -> motor command. The core of this repo.
+  haptic_profile.json   #   ...its tunable timings and intensities
+  protocol.py           # BLE CMD v2/v3 encode, decode, validate
+  belt_client.py        # BLE scan / connect / reconnect / sequence numbers
+  ios_motor_bridge.py   # PRIMARY runtime: /auto/status -> haptic -> BLE
+  ai_runner.py          # meit-ai loader (+ mock) for bench work
+  ai_motor_bridge.py    # STANDALONE runtime: audio or result -> haptic -> BLE
+  send_motor_test.py    # direct motor test, raw pulses or real patterns
+  haptic_preview.py     # print every pattern offline
+  verify_pipeline.py    # ONE command: real model -> belt, with expected feel
+  test_*.py             # unit tests (no hardware required)
+  test_meit_ai_integration.py  #   ...plus the real model, when MEIT_AI_PATH is set
+
 firmware/
   main/
-    main.c            # final direction command -> motor mask
-    ble_svc.c/.h      # motor-only BLE GATT server
-    motor.c/.h        # 2-motor PWM + vibration pattern sequencer
-    config.h          # GPIO / PWM / protocol constants
+    main.c              # command -> motor pattern
+    cmd_parse.c/.h      #   ...packet validation, host-testable
+    ble_svc.c/.h        #   ...motor-only BLE GATT server
+    motor.c/.h          #   ...2-motor PWM + per-step-mask sequencer
+    config.h            #   ...GPIO, PWM, duty cap, protocol constants
   hardware_tests/
-    motor_self_test/  # physical LEFT -> RIGHT -> CENTER check
-  PINMAP.md
-  PROTOCOL.md
-
-laptop/
-  protocol.py             # CMD v2 encode/decode + direction normalization
-  ios_motor_bridge.py     # meit-ios /auto/status -> BLE
-  send_motor_test.py      # direct LEFT/CENTER/RIGHT/STOP check
-  test_ios_motor_bridge.py
+    motor_self_test/    # on-device LEFT -> RIGHT -> FRONT -> BACK check
+  tests/
+    run_cmd_parse_tests.py    # host test: C parser vs. Python encoder
+    run_motor_host_tests.py   # host test: sequencer timing + sweep ordering
+  PINMAP.md  PROTOCOL.md
 
 docs/
-  ARCHITECTURE.md
-  IOS_INTEGRATION.md
-  MIGRATION_2026-09-30.md
-  hardware/README.md
+  HAPTIC_DESIGN.md      # why the vibration patterns are what they are
+  AI_INTEGRATION.md     # the meit-ai contract and the EE ingest API
+  IOS_INTEGRATION.md    # the /auto/status contract
+  ARCHITECTURE.md       # responsibility split
+  MIGRATION_2026-09-30.md  hardware/
 
-legacy/                    # previous microphone/TDoA/audio-upload implementation
-CHANGELOG.md
-GIT_PUSH_GUIDE.md
-VERSION
+legacy/                 # previous microphone/TDoA implementation, reference only
 ```
 
-Anything under `legacy/` is reference-only and is not part of the active build.
+Nothing under `legacy/` is built or imported.
 
-## 1. Python setup and tests
+## Tests
 
-From repository root:
+None of these need a belt, a board or a Bluetooth adapter.
 
-```powershell
-python -m pip install -r requirements.txt
-python -m unittest laptop.test_ios_motor_bridge -v
+```bash
+python -m unittest discover -s laptop -p "test_*.py" -t . -v   # 190 tests
+python firmware/tests/run_cmd_parse_tests.py                   # C parser vs Python encoder
+python firmware/tests/run_motor_host_tests.py                  # sequencer, 2 tick rates
 python -m compileall -q laptop
 ```
 
-## 2. Build and flash ESP32
+With a `meit-ai` checkout, 12 of those 190 additionally run the real model
+end to end instead of skipping:
 
-Required: ESP-IDF 5.2.x, target `esp32s3`.
+```bash
+MEIT_AI_PATH=~/src/meit-ai python -m unittest laptop.test_meit_ai_integration -v
+```
 
-```powershell
+Three are worth knowing about:
+
+- **`run_cmd_parse_tests.py`** compiles the real `firmware/main/cmd_parse.c` with
+  `cc` and feeds it golden packets generated by `laptop/protocol.py`. The Python
+  encoder and the C parser cannot drift apart without failing the build.
+- **`run_motor_host_tests.py`** runs the real sequencer against a virtual clock at
+  two RTOS tick rates, covering the timer races that only show up as a pattern
+  that occasionally sticks on or cuts short.
+- **`test_meit_ai_integration.py`** loads the real `meit-ai` SavedModel and asserts
+  the whole chain, including that meit-ai's `judge()` gates actually suppress quiet
+  and non-danger clips, and that every emitted burst clears the belt's
+  perceptibility floor.
+
+## Running the primary bridge
+
+Start `meit-ios/bridge/server.py` as its own repository documents, enable Auto in
+the app, confirm `http://127.0.0.1:8765/auto/status` responds, then:
+
+```bash
+python -m laptop.ios_motor_bridge
+python -m laptop.ios_motor_bridge --intensity-scale 1.2 --log-level DEBUG
+```
+
+Per completed automatic event it: polls `/auto/status`, accepts only a **new**
+completed dangerous event with a usable direction, builds the pattern, writes one
+BLE command, and only **then** records the event as delivered — so a failed write
+is retried after reconnecting instead of being silently lost.
+
+Suppressed events are logged with the reason (`AI decided not dangerous`,
+`direction 'unknown' is not usable`, …) rather than dropped silently, because at a
+demo "nothing happened" needs an explanation.
+
+## Standalone / bench runtime
+
+For replaying a `.wav` through the real model, or for an iOS bridge running
+without AI. Details in [`docs/AI_INTEGRATION.md`](docs/AI_INTEGRATION.md).
+
+```bash
+# feel a wav file's classification, no iPhones involved
+export MEIT_AI_PATH=~/src/meit-ai
+python -m laptop.ai_motor_bridge --wav siren.wav --direction center
+
+# no meit-ai checkout yet? mock the verdict and test everything else
+python -m laptop.ai_motor_bridge --wav siren.wav --direction center --mock-label siren
+
+# ingest server: POST /ee/audio (PCM16LE + X-MEIT-Direction) or /ee/event
+python -m laptop.ai_motor_bridge
+```
+
+## Firmware
+
+ESP-IDF 5.2.x, target `esp32s3`.
+
+```bash
 cd firmware
 idf.py set-target esp32s3
 idf.py build
@@ -90,100 +217,40 @@ idf.py -p COMx flash monitor
 Expected boot log:
 
 ```text
-ready: iOS/AI -> laptop -> BLE -> LEFT/CENTER/RIGHT motors
+ready: iOS/AI -> laptop -> BLE CMD v2/v3 -> LEFT/RIGHT/FRONT/BACK haptics
 ```
 
-The active firmware component builds only:
+Active sources: `main.c`, `cmd_parse.c`, `ble_svc.c`, `motor.c`.
 
-```text
-main.c
-ble_svc.c
-motor.c
-```
+### Reflashing
 
-## 3. Direct motor test first
-
-Before involving iOS or AI:
-
-```powershell
-python -m laptop.send_motor_test left
-python -m laptop.send_motor_test center
-python -m laptop.send_motor_test right
-python -m laptop.send_motor_test stop
-```
-
-Expected:
-
-```text
-left   -> LEFT motor only
-center -> both motors
-right  -> RIGHT motor only
-stop   -> both motors off
-```
-
-## 4. Run meit-ios Windows bridge
-
-Run the existing `meit-ios/bridge/server.py` exactly as documented in the iOS repository and enable Auto detection.
-
-Verify locally:
-
-```text
-http://127.0.0.1:8765/auto/status
-```
-
-The current public `meit-ios` bridge exposes this endpoint and retains the latest event in `last_event`.
-
-## 5. Run EE iOS-to-motor bridge
-
-From the `meit-ee` root:
-
-```powershell
-python -m laptop.ios_motor_bridge
-```
-
-Optional settings:
-
-```powershell
-python -m laptop.ios_motor_bridge   --server http://127.0.0.1:8765   --intensity 75   --poll-ms 100
-```
-
-The process:
-
-1. scans/reconnects to `MEIT-BELT`,
-2. polls `/auto/status`,
-3. accepts only new completed dangerous events,
-4. normalizes direction,
-5. sends one BLE haptic command,
-6. records the event as delivered only after successful GATT write.
-
-This prevents the same retained `/auto/status` event from vibrating repeatedly while still allowing retry when a BLE write actually fails.
-
-## BLE contract
-
-Device name: `MEIT-BELT`
-
-Service UUID: `01000000-1d9e-218f-9a4b-9c4e302a9d11`
-
-Command characteristic: `04000000-1d9e-218f-9a4b-9c4e302a9d11`
-
-See [`firmware/PROTOCOL.md`](firmware/PROTOCOL.md) for CMD v2 byte layout.
+The wire format is CMD v2, which is what firmware built from this repo speaks and
+what earlier builds already accepted. A belt flashed with any recent firmware
+therefore works with the current laptop code without reflashing.
 
 ## Hardware
 
-Current motor GPIO:
+| Function | GPIO | Connection |
+|---|---:|---|
+| LEFT motor PWM | 21 | LEFT DRV8833 AIN1 |
+| RIGHT motor PWM | 13 | RIGHT DRV8833 AIN1 |
 
-```text
-LEFT   = GPIO21
-RIGHT  = GPIO13
-CENTER = both
-```
+See [`firmware/PINMAP.md`](firmware/PINMAP.md) and
+[`docs/hardware/README.md`](docs/hardware/README.md).
 
-See [`firmware/PINMAP.md`](firmware/PINMAP.md) and [`docs/hardware/README.md`](docs/hardware/README.md).
+`config.h` caps PWM duty from an assumed supply and motor rating. That is a
+**software guard, not a measurement.** Before raising intensity, verify the real
+pack voltage, motor rating, DRV8833 wiring, common ground, current draw and
+temperature on the physical unit.
 
-Before increasing vibration intensity, verify the real motor supply voltage, motor rating, DRV8833 wiring, common ground, current draw and temperature. The firmware PWM cap is only a software limit.
+## BLE contract
+
+Device `MEIT-BELT`, service `01000000-1d9e-218f-9a4b-9c4e302a9d11`, command
+characteristic `04000000-1d9e-218f-9a4b-9c4e302a9d11`. Byte layout and every
+rejection rule: [`firmware/PROTOCOL.md`](firmware/PROTOCOL.md).
 
 ## Change history
 
-- Current migration details: [`docs/MIGRATION_2026-09-30.md`](docs/MIGRATION_2026-09-30.md)
-- Project-level changelog: [`CHANGELOG.md`](CHANGELOG.md)
-- Git branch/commit/push instructions: [`GIT_PUSH_GUIDE.md`](GIT_PUSH_GUIDE.md)
+- [`CHANGELOG.md`](CHANGELOG.md)
+- [`docs/MIGRATION_2026-09-30.md`](docs/MIGRATION_2026-09-30.md)
+- [`GIT_PUSH_GUIDE.md`](GIT_PUSH_GUIDE.md)

@@ -32,17 +32,36 @@ _Static_assert(MOTOR_DUTY_CAP > 0, "MOTOR_DUTY_CAP must be > 0");
 #define MOTOR_PWM_FREQ_HZ 20000
 #define MOTOR_PWM_RES     LEDC_TIMER_8_BIT
 
-#define PATTERN_MAX_PAIRS 4
+// ================================================================
+// Pattern budget.
+//
+// A CMD packet is a 6-byte header plus 2 bytes per step. The longest pattern in
+// use is a siren's three pulses, so 4 leaves headroom and the worst case is 14
+// bytes — well inside the 20 payload bytes an ATT Write Request carries on the
+// default 23-byte MTU. A haptic alert therefore never depends on MTU
+// negotiation succeeding.
+// ================================================================
+#define PATTERN_MAX_STEPS   4
 
-// BLE CMD v2 direction values. CENTER deliberately means BOTH motors.
+// ================================================================
+// BLE CMD protocol (v2).
+//
+// One motor mask applies to the whole pattern and is derived from the direction
+// byte. That is all the belt needs: iOS reports left/right/center, so there are
+// three sensations — left motor, right motor, or both together. There is no rear
+// cue, because a stereo microphone pair cannot separate front from back and the
+// system has no rear sensor.
+// ================================================================
+#define CMD_MAGIC     0xA5
+#define CMD_VERSION   0x02
+#define CMD_HEADER    6
+
 enum {
     CMD_DIR_STOP = 0,
     CMD_DIR_LEFT = 1,
-    CMD_DIR_CENTER = 2,
+    CMD_DIR_CENTER = 2,   // both motors, simultaneously
     CMD_DIR_RIGHT = 3,
 };
-
-#define CMD_MAGIC   0xA5
-#define CMD_VERSION 0x02
+#define CMD_DIR_MAX   CMD_DIR_RIGHT
 
 extern const int MOTOR_GPIO[NUM_MOTORS];
