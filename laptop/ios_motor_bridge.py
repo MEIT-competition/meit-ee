@@ -14,7 +14,20 @@ No iOS or ``meit-ai`` source is modified, and inference is **not** repeated here
 the iOS bridge has already run the model and publishes the result, so this
 process only decides what the wearer should feel and delivers it.
 
-Run ``meit-ios/bridge/server.py`` and enable Auto in the app first.
+Run ``meit-ios/bridge/server.py`` first, then start the phone(s):
+
+* single wearable iPhone (stereo left/center/right) — start listening in the
+  app's Wearable mode and poll ``/wearable/status``::
+
+      python -m laptop.ios_motor_bridge --status-path /wearable/status
+
+* four-iPhone coordination path — enable Auto in the app and poll the default
+  ``/auto/status``::
+
+      python -m laptop.ios_motor_bridge
+
+Both paths publish the same ``last_event`` shape, so everything below the status
+read — suppression policy, haptic mapping, BLE delivery — is identical.
 """
 from __future__ import annotations
 
@@ -115,11 +128,12 @@ class IOSMotorBridge:
     """Poll the iOS bridge and deliver one haptic command per new event."""
 
     def __init__(self, *, server: str = DEFAULT_SERVER,
+                 status_path: str = "/auto/status",
                  profile: HapticProfile = DEFAULT_PROFILE,
                  intensity_scale: float = 1.0,
                  poll_interval: float = 0.1,
                  http_timeout: float = 1.0) -> None:
-        self.status_url = server.rstrip("/") + "/auto/status"
+        self.status_url = server.rstrip("/") + "/" + status_path.lstrip("/")
         self.profile = profile
         self.intensity_scale = intensity_scale
         self.poll_interval = poll_interval
@@ -210,6 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="MEIT: meit-ios /auto/status -> haptic pattern -> BLE belt")
     parser.add_argument("--server", default=DEFAULT_SERVER,
                         help="meit-ios laptop bridge base URL")
+    parser.add_argument("--status-path", default="/auto/status",
+                        help="status endpoint to poll: /auto/status for the four-iPhone "
+                             "coordination path, or /wearable/status for the single "
+                             "wearable-iPhone stereo path")
     parser.add_argument("--poll-ms", type=int, default=100,
                         help="/auto/status polling interval in milliseconds")
     parser.add_argument("--http-timeout", type=float, default=1.0)
@@ -235,6 +253,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     bridge = IOSMotorBridge(
         server=args.server,
+        status_path=args.status_path,
         profile=HapticProfile.load(args.profile),
         intensity_scale=args.intensity_scale,
         poll_interval=args.poll_ms / 1000.0,

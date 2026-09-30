@@ -84,7 +84,10 @@ python -m laptop.send_motor_test all
 # 5. verify the whole back half at once, on the real belt
 python -m laptop.verify_pipeline --meit-ai /path/to/meit-ai
 
-# 6. run the live pipeline (meit-ios bridge running, Auto enabled in the app)
+# 6. run the live pipeline (meit-ios bridge running)
+#    single wearable iPhone (stereo left/center/right):
+python -m laptop.ios_motor_bridge --status-path /wearable/status
+#    or the four-iPhone coordination path (Auto enabled in the app):
 python -m laptop.ios_motor_bridge
 ```
 
@@ -169,15 +172,21 @@ Three are worth knowing about:
 
 ## Running the primary bridge
 
-Start `meit-ios/bridge/server.py` as its own repository documents, enable Auto in
-the app, confirm `http://127.0.0.1:8765/auto/status` responds, then:
+Start `meit-ios/bridge/server.py` as its own repository documents, then pick the
+demo path:
 
 ```bash
+# single wearable iPhone (stereo left/center/right) — the demoable-now path.
+# Start listening in the app's Wearable mode, then:
+python -m laptop.ios_motor_bridge --status-path /wearable/status
+
+# four-iPhone coordination path — enable Auto in the app, then:
 python -m laptop.ios_motor_bridge
 python -m laptop.ios_motor_bridge --intensity-scale 1.2 --log-level DEBUG
 ```
 
-Per completed automatic event it: polls `/auto/status`, accepts only a **new**
+Both paths publish the same event shape, so the bridge treats them identically.
+Per completed event it: polls the chosen status endpoint, accepts only a **new**
 completed dangerous event with a usable direction, builds the pattern, writes one
 BLE command, and only **then** records the event as delivered — so a failed write
 is retried after reconnecting instead of being silently lost.

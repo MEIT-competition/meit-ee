@@ -257,6 +257,60 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.writes), 1)
 
 
+class WearableStatusPathTests(unittest.IsolatedAsyncioTestCase):
+    """The single-wearable-iPhone path: /wearable/status carries the same shape.
+
+    The dicts here are byte-for-byte what ``meit-ios`` ``WearableEvents.status()``
+    publishes, so these tests are the EE end of that cross-repo contract.
+    """
+
+    def test_status_path_selects_the_endpoint(self):
+        default = IOSMotorBridge()
+        self.assertTrue(default.status_url.endswith("/auto/status"))
+        wearable = IOSMotorBridge(status_path="/wearable/status")
+        self.assertTrue(wearable.status_url.endswith("/wearable/status"))
+        # A missing or extra leading slash must not double up or drop the path.
+        self.assertEqual(IOSMotorBridge(server="http://h:8765/",
+                                        status_path="wearable/status").status_url,
+                         "http://h:8765/wearable/status")
+
+    @staticmethod
+    def wearable_status(direction="left", label="siren", confidence=0.9,
+                        danger=True, event_id="w1"):
+        # Exactly the record meit-ios/bridge/wearable.py emits.
+        return {"last_event": {
+            "event_id": event_id, "outcome": "completed", "direction": direction,
+            "result": {"label": label, "confidence": confidence,
+                       "inference_ms": 2.5, "danger": danger,
+                       "direction": None if direction == "unavailable" else direction}}}
+
+    async def test_wearable_event_drives_the_matching_motor(self):
+        for direction, mask in (("left", MASK_LEFT), ("right", MASK_RIGHT),
+                                ("center", MASK_BOTH)):
+            client = FakeClient()
+            bridge = IOSMotorBridge(status_path="/wearable/status")
+            bridge.cursor_ready = True
+            await bridge._handle(BeltLink(client),
+                                 self.wearable_status(direction=direction, event_id=direction))
+            self.assertEqual(len(client.writes), 1, direction)
+            self.assertEqual(decode(client.writes[0][1]).command.mask, mask, direction)
+
+    async def test_wearable_unavailable_is_suppressed(self):
+        client = FakeClient()
+        bridge = IOSMotorBridge(status_path="/wearable/status")
+        bridge.cursor_ready = True
+        await bridge._handle(BeltLink(client), self.wearable_status(direction="unavailable"))
+        self.assertEqual(client.writes, [])
+
+    async def test_wearable_non_danger_is_suppressed(self):
+        client = FakeClient()
+        bridge = IOSMotorBridge(status_path="/wearable/status")
+        bridge.cursor_ready = True
+        await bridge._handle(BeltLink(client),
+                             self.wearable_status(label="normal", danger=False))
+        self.assertEqual(client.writes, [])
+
+
 class EventDataclassTests(unittest.TestCase):
     def test_event_is_hashable_and_comparable(self):
         first = Event("a", "left", DIR_LEFT, "siren", 0.9, True)

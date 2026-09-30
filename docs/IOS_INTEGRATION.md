@@ -5,13 +5,37 @@ Reference repository: <https://github.com/MEIT-competition/meit-ios>
 Verified against public `main` on 2026-09-30. **No iOS source is modified.** EE
 consumes the existing laptop-bridge interface.
 
+## Two status endpoints, one parser
+
+EE polls one status endpoint, chosen with `--status-path`:
+
+| Demo path | Endpoint | When |
+|---|---|---|
+| single wearable iPhone (stereo left/center/right) | `GET /wearable/status` | one phone, available now |
+| four-iPhone coordination | `GET /auto/status` | four phones + calibration |
+
+Both publish the **same `last_event` shape**, so everything below the status read
+— suppression policy, haptic mapping, BLE delivery — is identical and shares one
+parser (`extract_event`). Run the wearable demo with:
+
+```text
+python -m laptop.ios_motor_bridge --status-path /wearable/status
+```
+
+`/wearable/status` is served by `meit-ios/bridge/wearable.py`: each completed
+`POST /wearable/infer` (single iPhone stereo + `meit-ai`) is retained and
+published. It is a read-only hand-off — the iOS bridge selects no direction,
+completes no automatic event, and queues no haptic; the belt bridge here owns the
+haptic decision.
+
 ## Endpoint EE consumes
 
 ```text
-GET http://127.0.0.1:8765/auto/status
+GET http://127.0.0.1:8765/auto/status      # four-iPhone coordination path
+GET http://127.0.0.1:8765/wearable/status  # single wearable-iPhone path
 ```
 
-Only the automatic-event status is used. The fields EE reads:
+The fields EE reads (identical for both):
 
 ```json
 {
