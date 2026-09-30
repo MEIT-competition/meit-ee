@@ -50,6 +50,11 @@ from laptop.haptic import (
 )
 from laptop.protocol import DIR_STOP, direction_name, normalize_direction
 
+try:  # 시연 화면(선택). 없어도 벨트 동작에는 영향 없음
+    from display_server import show, start as start_display
+except ImportError:
+    show = start_display = None
+
 LOGGER = logging.getLogger("meit.ios")
 
 DEFAULT_SERVER = "http://127.0.0.1:8765"
@@ -195,6 +200,9 @@ class IOSMotorBridge:
         # stays put so the same hazard is retried after reconnecting instead of
         # being lost, which is the whole point of doing this after the write.
         self.seen_event_id = event.event_id
+        if show is not None:
+            # 실제 BLE 전송이 성공한 뒤에만 화면 갱신 (화면이 벨트보다 앞서가지 않게)
+            show(event.label, event.direction, None)
         margin = "" if event.margin_db is None else f" margin={event.margin_db:.1f}dB"
         LOGGER.info("ALERT event=%s %s/%s conf=%.3f%s -> %s",
                     event.event_id[:8], direction_name(event.direction),
@@ -260,6 +268,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         http_timeout=args.http_timeout,
     )
     belt = belt_from_arguments(args)
+    if start_display is not None:
+        start_display()
     try:
         asyncio.run(belt.run_forever(bridge.session))
     except KeyboardInterrupt:

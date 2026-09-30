@@ -52,11 +52,12 @@ const NAMES = {LEFT: "왼쪽", RIGHT: "오른쪽", BACK: "뒤"};
 const CLASS_KR = { horn: "경적", siren: "사이렌", crash: "충돌음" };
 const COLOR = { horn: "#ffb020", siren: "#ff4d4d", crash: "#ff7a2f" };
 
-function resolve(direction) {
-  if (direction === "LEFT") return { dots: ["LEFT"], text: NAMES.LEFT };
-  if (direction === "RIGHT") return { dots: ["RIGHT"], text: NAMES.RIGHT };
-  if (direction === "BACK") return { dots: ACTIVE, text: NAMES.BACK };
-  return { dots: [], text: "방향 판별 불가" };
+function resolve(dir) {
+  const d = String(dir).toUpperCase();
+  if (d.includes("RIGHT")) return { dots: ["RIGHT"],         text: "오른쪽" };
+  if (d.includes("LEFT"))  return { dots: ["LEFT"],          text: "왼쪽" };
+  if (d.includes("BACK"))  return { dots: ["LEFT", "RIGHT"], text: "뒤" };
+  return                          { dots: ["LEFT", "RIGHT"], text: "뒤" };
 }
 
 const belt = document.getElementById("belt");
@@ -106,7 +107,7 @@ function render(s) {
   r.dots.forEach(i => { if (dots[i]) dots[i].classList.add("on"); });
 
   label.textContent = CLASS_KR[s.sound_class] || s.sound_class;
-  sub.textContent = r.text + "  ·  세기 " + s.intensity;
+  sub.textContent = (s.intensity == null) ? r.text : r.text + "  ·  세기 " + Math.round(s.intensity);
   timer = setTimeout(idle, 4000);
 }
 
