@@ -6,7 +6,7 @@
                               v
                      this process  (laptop/haptic.py)
                               |
-                              |  BLE CMD v2
+                              |  BLE CMD v3
                               v
                        ESP32-S3 "MEIT-BELT"  ->  LEFT / RIGHT motors
 
@@ -14,20 +14,7 @@ No iOS or ``meit-ai`` source is modified, and inference is **not** repeated here
 the iOS bridge has already run the model and publishes the result, so this
 process only decides what the wearer should feel and delivers it.
 
-Run ``meit-ios/bridge/server.py`` first, then start the phone(s):
-
-* single wearable iPhone (stereo left/center/right) — start listening in the
-  app's Wearable mode and poll ``/wearable/status``::
-
-      python -m laptop.ios_motor_bridge --status-path /wearable/status
-
-* four-iPhone coordination path — enable Auto in the app and poll the default
-  ``/auto/status``::
-
-      python -m laptop.ios_motor_bridge
-
-Both paths publish the same ``last_event`` shape, so everything below the status
-read — suppression policy, haptic mapping, BLE delivery — is identical.
+Run ``meit-ios/bridge/server.py`` and enable Auto in the app first.
 """
 from __future__ import annotations
 
@@ -50,6 +37,11 @@ from laptop.haptic import (
 )
 from laptop.protocol import DIR_STOP, direction_name, normalize_direction
 
+try:  # 시연 화면(선택). 없어도 벨트 동작에는 영향 없음
+    from display_server import show, start as start_display
+except ImportError:
+    show = start_display = None
+
 LOGGER = logging.getLogger("meit.ios")
 
 DEFAULT_SERVER = "http://127.0.0.1:8765"
@@ -66,6 +58,7 @@ class Event:
     confidence: float
     danger: bool
     margin_db: Optional[float] = None
+    intensity: Optional[float] = None
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -75,7 +68,7 @@ def _as_float(value: Any) -> Optional[float]:
         return None
 
 
-def extract_event(status: Dict[str, Any]) -> Optional[Event]:
+def extract_event(status: Dict[str, Any], *, allow_back: bool = True) -> Optional[Event]:
     """Parse the retained ``last_event``, or ``None`` if there is no completed one.
 
     Parsing and *policy* are deliberately separate: this returns whatever the
@@ -101,13 +94,14 @@ def extract_event(status: Dict[str, Any]) -> Optional[Event]:
     return Event(
         event_id=event_id,
         raw_direction=str(raw_direction),
-        direction=normalize_direction(raw_direction),
+        direction=normalize_direction(raw_direction, allow_back=allow_back),
         label=str(result.get("label", "")).strip().lower(),
         confidence=_as_float(result.get("confidence")) or 0.0,
         # `danger` is the meit-ai decision layer's verdict. Absent in older or
         # manual-path responses, so only an explicit False suppresses.
         danger=result.get("danger") is not False,
         margin_db=_as_float(event.get("direction_margin_db")),
+        intensity=_as_float(result.get("intensity")),
     )
 
 
@@ -128,16 +122,18 @@ class IOSMotorBridge:
     """Poll the iOS bridge and deliver one haptic command per new event."""
 
     def __init__(self, *, server: str = DEFAULT_SERVER,
-                 status_path: str = "/auto/status",
                  profile: HapticProfile = DEFAULT_PROFILE,
                  intensity_scale: float = 1.0,
                  poll_interval: float = 0.1,
-                 http_timeout: float = 1.0) -> None:
-        self.status_url = server.rstrip("/") + "/" + status_path.lstrip("/")
+                 http_timeout: float = 1.0,
+                 allow_back: bool = True,
+                 status_path: str = "/auto/status") -> None:
+        self.status_url = server.rstrip("/") + status_path
         self.profile = profile
         self.intensity_scale = intensity_scale
         self.poll_interval = poll_interval
         self.http_timeout = http_timeout
+        self.allow_back = allow_back
         self.seen_event_id: Optional[str] = None
         self.cursor_ready = False
 
@@ -169,7 +165,7 @@ class IOSMotorBridge:
         self.cursor_ready = True
 
     async def _handle(self, link: BeltLink, status: Dict[str, Any]) -> None:
-        event = extract_event(status)
+        event = extract_event(status, allow_back=self.allow_back)
         if event is None or event.event_id == self.seen_event_id:
             return
 
@@ -195,6 +191,9 @@ class IOSMotorBridge:
         # stays put so the same hazard is retried after reconnecting instead of
         # being lost, which is the whole point of doing this after the write.
         self.seen_event_id = event.event_id
+        if show is not None:
+            # 실제 BLE 전송이 성공한 뒤에만 화면 갱신 (화면이 벨트보다 앞서가지 않게)
+            show(event.label, event.direction, event.intensity)
         margin = "" if event.margin_db is None else f" margin={event.margin_db:.1f}dB"
         LOGGER.info("ALERT event=%s %s/%s conf=%.3f%s -> %s",
                     event.event_id[:8], direction_name(event.direction),
@@ -225,9 +224,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", default=DEFAULT_SERVER,
                         help="meit-ios laptop bridge base URL")
     parser.add_argument("--status-path", default="/auto/status",
-                        help="status endpoint to poll: /auto/status for the four-iPhone "
-                             "coordination path, or /wearable/status for the single "
-                             "wearable-iPhone stereo path")
+                        choices=["/auto/status", "/wearable/status"],
+                        help="/auto/status = iPhone 4대 모드, /wearable/status = iPhone 1대 웨어러블 모드")
     parser.add_argument("--poll-ms", type=int, default=100,
                         help="/auto/status polling interval in milliseconds")
     parser.add_argument("--http-timeout", type=float, default=1.0)
@@ -253,13 +251,18 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     bridge = IOSMotorBridge(
         server=args.server,
-        status_path=args.status_path,
         profile=HapticProfile.load(args.profile),
         intensity_scale=args.intensity_scale,
         poll_interval=args.poll_ms / 1000.0,
         http_timeout=args.http_timeout,
+        # A v2 belt cannot render a sweep, so fold BACK into FRONT at the
+        # source rather than letting the transport downgrade it silently.
+        allow_back=args.protocol >= 3,
+        status_path=args.status_path,
     )
     belt = belt_from_arguments(args)
+    if start_display is not None:
+        start_display()
     try:
         asyncio.run(belt.run_forever(bridge.session))
     except KeyboardInterrupt:

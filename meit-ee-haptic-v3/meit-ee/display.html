@@ -57,7 +57,7 @@ function resolve(dir) {
   if (d.includes("RIGHT")) return { dots: ["RIGHT"],         text: "오른쪽" };
   if (d.includes("LEFT"))  return { dots: ["LEFT"],          text: "왼쪽" };
   if (d.includes("BACK"))  return { dots: ["LEFT", "RIGHT"], text: "뒤" };
-  return                          { dots: ["LEFT", "RIGHT"], text: "뒤" };
+  return                          { dots: ["LEFT", "RIGHT"], text: "가운데" };
 }
 
 const belt = document.getElementById("belt");
