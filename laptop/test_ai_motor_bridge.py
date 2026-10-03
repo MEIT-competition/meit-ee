@@ -7,6 +7,7 @@ queue's drop policy, and the fact that only the BLE task ever writes.
 import asyncio
 import logging
 import unittest
+from unittest.mock import patch
 
 from laptop.ai_motor_bridge import CommandSink, Ingest, _drain
 from laptop.ai_runner import PAYLOAD_BYTES, AIError, MockAIRunner
@@ -122,12 +123,26 @@ class AudioIngestTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CooldownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_alert_is_accepted_regardless_of_clock_origin(self):
+        # monotonic() has an arbitrary origin; zero is a valid first timestamp.
+        for now in (0.0, 0.2, -1000.0):
+            with self.subTest(now=now):
+                ingest, sink = make_ingest(cooldown_ms=60_000)
+                with patch("laptop.ai_motor_bridge.time.monotonic", return_value=now):
+                    first = ingest.handle_event({"direction": "left", "label": "horn"})
+                self.assertEqual(first["outcome"], "queued")
+                self.assertEqual(sink.counters.cooldown, 0)
+                await asyncio.sleep(0)
+                self.assertEqual(sink.queue.qsize(), 1)
+
     async def test_a_second_alert_inside_the_cooldown_is_dropped(self):
         # Two alerts 200 ms apart are almost always the same physical event;
         # replaying it would only cut the first pattern short.
         ingest, sink = make_ingest(cooldown_ms=60_000)
-        first = ingest.handle_event({"direction": "left", "label": "horn"})
-        second = ingest.handle_event({"direction": "right", "label": "siren"})
+        with patch("laptop.ai_motor_bridge.time.monotonic", return_value=0.0) as clock:
+            first = ingest.handle_event({"direction": "left", "label": "horn"})
+            clock.return_value = 0.2
+            second = ingest.handle_event({"direction": "right", "label": "siren"})
         self.assertEqual(first["outcome"], "queued")
         self.assertEqual(second["outcome"], "cooldown")
         self.assertEqual(sink.counters.cooldown, 1)
@@ -137,18 +152,36 @@ class CooldownTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_zero_cooldown_accepts_everything(self):
         ingest, sink = make_ingest(cooldown_ms=0)
-        for _ in range(3):
-            self.assertEqual(
-                ingest.handle_event({"direction": "left", "label": "horn"})["outcome"],
-                "queued")
+        with patch("laptop.ai_motor_bridge.time.monotonic", return_value=0.0):
+            for _ in range(3):
+                self.assertEqual(
+                    ingest.handle_event({"direction": "left", "label": "horn"})["outcome"],
+                    "queued")
         await asyncio.sleep(0)
         self.assertEqual(sink.queue.qsize(), 3)
+
+    async def test_alert_is_accepted_at_the_cooldown_boundary(self):
+        ingest, sink = make_ingest(cooldown_ms=1500)
+        with patch("laptop.ai_motor_bridge.time.monotonic", return_value=0.0) as clock:
+            first = ingest.handle_event({"direction": "left", "label": "horn"})
+            clock.return_value = 1.499
+            blocked = ingest.handle_event({"direction": "right", "label": "siren"})
+            clock.return_value = 1.5
+            accepted = ingest.handle_event({"direction": "right", "label": "siren"})
+        self.assertEqual(first["outcome"], "queued")
+        self.assertEqual(blocked["outcome"], "cooldown")
+        self.assertEqual(accepted["outcome"], "queued")
+        self.assertEqual(sink.counters.cooldown, 1)
+        await asyncio.sleep(0)
+        self.assertEqual(sink.queue.qsize(), 2)
 
     async def test_stop_ignores_the_cooldown(self):
         # Stopping the motors must always work, whatever the alert rate.
         ingest, sink = make_ingest(cooldown_ms=60_000)
-        ingest.handle_event({"direction": "left", "label": "horn"})
-        self.assertEqual(sink.submit_stop(), "queued")
+        with patch("laptop.ai_motor_bridge.time.monotonic", return_value=0.0):
+            first = ingest.handle_event({"direction": "left", "label": "horn"})
+            self.assertEqual(sink.submit_stop(), "queued")
+        self.assertEqual(first["outcome"], "queued")
         await asyncio.sleep(0)
         self.assertEqual(sink.queue.qsize(), 2)
 

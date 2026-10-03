@@ -99,7 +99,8 @@ class CommandSink:
         self.cooldown = cooldown_ms / 1000.0
         self.counters = Counters()
         self._lock = threading.Lock()
-        self._last_accepted = 0.0
+        # monotonic() has an arbitrary origin; no alert has been accepted yet.
+        self._last_accepted: Optional[float] = None
 
     def submit(self, command: MotorCommand, label: str) -> str:
         """Accept a command from any thread. Returns an outcome string."""
@@ -108,7 +109,8 @@ class CommandSink:
             # A second alert within the cooldown is almost always the same
             # physical event seen again; replaying it would only mask the first
             # pattern part-way through.
-            if self.cooldown > 0 and now - self._last_accepted < self.cooldown:
+            if (self.cooldown > 0 and self._last_accepted is not None
+                    and now - self._last_accepted < self.cooldown):
                 self.counters.cooldown += 1
                 return "cooldown"
             self._last_accepted = now
